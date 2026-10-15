@@ -1,0 +1,13 @@
+// Prisma schema for THE LORDS Finance OS.
+// Connection URLs live in prisma.config.ts (CLI) and src/lib/db.ts (runtime adapter).
+// No models yet: the schema will be added after review.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
