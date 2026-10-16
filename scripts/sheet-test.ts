@@ -129,7 +129,8 @@ async function main() {
       const lines = run.journalEntry!.lines
       const by = (code: string, side: "debit" | "credit") => lines.filter((l) => l.ledgerAccount.code === code).reduce((a, l) => a.add(new Decimal(l[side])), new Decimal(0)).toString()
       assert.equal(run.journalEntry!.status, "POSTED")
-      assert.equal(by("5000", "debit"), "1550") // delivery payroll (InfluLords is cost of sales): 1,200 + 200 + 150
+      assert.equal(by("5000", "debit"), "1200") // delivery payroll (InfluLords is cost of sales): base salary
+      assert.equal(by("5050", "debit"), "350") // delivery bonuses: 200 commission + 150 bonus
       assert.equal(by("5000", "credit"), "50") // deduction reduces the expense
       assert.equal(by("2100", "credit"), "1500") // net payable
       const adjustments = await prisma.payrollAdjustment.findMany({ where: { employeeId } })

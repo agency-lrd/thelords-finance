@@ -17,8 +17,9 @@
     "db:inspect": "tsx scripts/db-inspect.ts",
     "admin:grant-super": "tsx scripts/grant-super-admin.ts",
     "test:unit": "tsx --test \"src/**/*.test.ts\"",
-    "test": "npm run test:unit && npm run db:test && npm run test:sheet",
-    "test:sheet": "tsx --conditions=react-server scripts/sheet-test.ts"
+    "test": "npm run test:unit && npm run db:test && npm run test:sheet && npm run test:reports",
+    "test:sheet": "tsx --conditions=react-server scripts/sheet-test.ts",
+    "test:reports": "tsx --conditions=react-server scripts/reports-test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -29,6 +30,7 @@
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "decimal.js": "^10.6.0",
+    "fflate": "0.8.2",
     "lucide-react": "^1.57.0",
     "next": "16.4.2",
     "pg": "8.23.1",

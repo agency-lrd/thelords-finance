@@ -789,19 +789,30 @@ export async function approveMonth(user: SessionUser, m: Month, comment: string 
     })
 
     const delivery = await accountByCode(tx, user.organizationId, "5000")
+    const deliveryBonus = await accountByCode(tx, user.organizationId, "5050")
     const overhead = await accountByCode(tx, user.organizationId, "6000")
+    const overheadBonus = await accountByCode(tx, user.organizationId, "6050")
     const payable = await accountByCode(tx, user.organizationId, "2100")
     const advances = await accountByCode(tx, user.organizationId, "1300")
+    // Base pay goes to the payroll account, variable pay (KPI, commission, bonuses) to the bonus account,
+    // both on the cost-of-sales or operating side according to the department's classification.
     const lines = items.flatMap((item) => {
       const fx = new Decimal(item.fxRateToBase)
-      const expense = item.department?.costClassification === "COST_OF_SALES" ? delivery : overhead
+      const delivers = item.department?.costClassification === "COST_OF_SALES"
+      const salaryAccount = delivers ? delivery : overhead
+      const bonusAccount = delivers ? deliveryBonus : overheadBonus
       const dims = { departmentId: item.departmentId, employeeId: item.employeeId }
+      const positive = (types: string[] | null) =>
+        toBase(item.lines.filter((l) => new Decimal(l.amount).gt(0) && (types === null || types.includes(l.lineType))).reduce((a, l) => a.add(new Decimal(l.amount)), new Decimal(0)), fx)
       const gross = toBase(new Decimal(item.grossAmount), fx)
+      const base = positive(["BASE_SALARY"])
+      const variable = gross.sub(base)
       const recovery = toBase(item.lines.filter((l) => l.lineType === "ADVANCE_RECOVERY").reduce((a, l) => a.add(new Decimal(l.amount).abs()), new Decimal(0)), fx)
       const deductions = toBase(new Decimal(item.deductionsAmount), fx).sub(recovery)
       return [
-        { accountId: expense, debit: gross, description: "Payroll", ...dims },
-        { accountId: expense, credit: deductions, description: "Payroll deductions", ...dims },
+        { accountId: salaryAccount, debit: base, description: "Base salary", ...dims },
+        { accountId: bonusAccount, debit: variable, description: "Bonuses and commissions", ...dims },
+        { accountId: salaryAccount, credit: deductions, description: "Payroll deductions", ...dims },
         { accountId: advances, credit: recovery, description: "Advance recovered", ...dims },
         { accountId: payable, credit: gross.sub(deductions).sub(recovery), description: "Net pay payable", ...dims },
       ]

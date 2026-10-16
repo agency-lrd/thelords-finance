@@ -453,6 +453,50 @@ enum DistributionStatus {
   @@map("distribution_status")
 }
 
+/// Manual transaction types. Each maps to a fixed double-entry template (src/lib/data/transactions.ts);
+/// transfers, contributions and loans never touch revenue accounts.
+enum TransactionType {
+  REVENUE
+  OPERATING_EXPENSE
+  PAYROLL
+  INTERNAL_TRANSFER
+  OWNER_CONTRIBUTION
+  OWNER_WITHDRAWAL
+  LOAN_RECEIVED
+  LOAN_REPAYMENT
+  INVESTMENT
+  TAX_PAYMENT
+  ASSET_PURCHASE
+  REFUND
+  ADJUSTMENT
+
+  @@map("transaction_type")
+}
+
+enum TransactionStatus {
+  DRAFT
+  POSTED
+  REVERSED
+
+  @@map("transaction_status")
+}
+
+enum SettlementStatus {
+  PAID
+  UNPAID
+  PARTIAL
+
+  @@map("settlement_status")
+}
+
+enum BudgetScenario {
+  BASE
+  CONSERVATIVE
+  AGGRESSIVE
+
+  @@map("budget_scenario")
+}
+
 enum AuditActorType {
   USER
   SYSTEM
@@ -501,7 +545,9 @@ model Organization {
   distributions      Distribution[]
   auditLogs          AuditLog[]
 
-  baseCurrencyRef Currency @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
+  baseCurrencyRef Currency      @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
+  transactions    Transaction[]
+  budgetLines     BudgetLine[]
 
   @@map("organizations")
 }
@@ -532,6 +578,8 @@ model AppUser {
   distributionApprovals Distribution[]
   kpiActualsRecorded    KpiActual[]
   auditLogs             AuditLog[]
+  transactionsCreated   Transaction[]        @relation("TransactionCreatedBy")
+  transactionsPosted    Transaction[]        @relation("TransactionPostedBy")
 
   @@map("app_users")
 }
@@ -631,6 +679,7 @@ model FinancialPeriod {
   projectCosts       ProjectCost[]
   journalEntries     JournalEntry[]
   distributions      Distribution[]
+  transactions       Transaction[]
 
   @@unique([organizationId, year, month])
   @@index([organizationId, status])
@@ -668,6 +717,7 @@ model Currency {
   journalLineTransactionCurrencies JournalLine[]       @relation("JournalLineTransactionCurrency")
   ownershipStakeCurrencies         OwnershipStake[]    @relation("OwnershipStakeCurrency")
   distributionCurrencies           Distribution[]      @relation("DistributionCurrency")
+  transactionCurrencies            Transaction[]       @relation("TransactionCurrency")
 
   @@map("currencies")
 }
@@ -723,6 +773,8 @@ model Department {
   payrollItems       PayrollItem[]
   projects           Project[]
   journalLines       JournalLine[]
+  transactions       Transaction[]
+  budgetLines        BudgetLine[]
 
   @@unique([organizationId, code])
   @@index([parentId])
@@ -1260,6 +1312,7 @@ model Client {
   projects           Project[]
   journalLines       JournalLine[]
   defaultCurrencyRef Currency?     @relation("ClientDefaultCurrency", fields: [defaultCurrency], references: [code], onDelete: Restrict)
+  transactions       Transaction[]
 
   @@unique([organizationId, code])
   @@map("clients")
@@ -1291,6 +1344,8 @@ model Project {
   costs        ProjectCost[]
   journalLines JournalLine[]
   currencyRef  Currency        @relation("ProjectCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  transactions Transaction[]
+  budgetLines  BudgetLine[]
 
   @@unique([organizationId, code])
   @@index([clientId])
@@ -1397,6 +1452,7 @@ model FinancialCategory {
   projectIncome     ProjectIncome[]
   projectCosts      ProjectCost[]
   journalLines      JournalLine[]
+  transactions      Transaction[]
 
   @@unique([organizationId, code])
   @@index([organizationId, kind])
@@ -1421,13 +1477,16 @@ model LedgerAccount {
   createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  parent           LedgerAccount?      @relation("AccountTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children         LedgerAccount[]     @relation("AccountTree")
-  categories       FinancialCategory[]
-  financialAccount FinancialAccount?
-  journalLines     JournalLine[]
-  currencyRef      Currency?           @relation("LedgerAccountCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  parent             LedgerAccount?      @relation("AccountTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children           LedgerAccount[]     @relation("AccountTree")
+  categories         FinancialCategory[]
+  financialAccount   FinancialAccount?
+  journalLines       JournalLine[]
+  currencyRef        Currency?           @relation("LedgerAccountCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  transactionDebits  Transaction[]       @relation("TransactionDebitAccount")
+  transactionCredits Transaction[]       @relation("TransactionCreditAccount")
+  budgetLines        BudgetLine[]
 
   @@unique([organizationId, code])
   @@index([organizationId, type, subtype])
@@ -1455,6 +1514,8 @@ model FinancialAccount {
   payrollPayments      PayrollPayment[]
   distributionPayments DistributionAllocation[]
   currencyRef          Currency                 @relation("FinancialAccountCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  transactionsFrom     Transaction[]            @relation("TransactionAccount")
+  transactionsTo       Transaction[]            @relation("TransactionCounterAccount")
 
   @@index([organizationId])
   @@map("financial_accounts")
@@ -1490,6 +1551,7 @@ model JournalEntry {
   projectIncome  ProjectIncome?
   projectCost    ProjectCost?
   distribution   Distribution?
+  transaction    Transaction?
 
   @@unique([organizationId, entryNumber])
   @@index([periodId, status])
@@ -1555,6 +1617,7 @@ model Shareholder {
   employee     Employee?                @relation(fields: [employeeId], references: [id], onDelete: SetNull)
   stakes       OwnershipStake[]
   allocations  DistributionAllocation[]
+  transactions Transaction[]
 
   @@index([organizationId])
   @@map("shareholders")
@@ -1633,6 +1696,102 @@ model DistributionAllocation {
 
   @@unique([distributionId, shareholderId])
   @@map("distribution_allocations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Manual transactions and budgets
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A manually entered financial transaction. Drafts are editable; posting creates exactly one journal
+/// entry from the type's template; a posted transaction is corrected only by reversal.
+model Transaction {
+  id                        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId            String            @map("organization_id") @db.Uuid
+  number                    Int
+  type                      TransactionType
+  status                    TransactionStatus @default(DRAFT)
+  date                      DateTime          @db.Date
+  periodId                  String            @map("period_id") @db.Uuid
+  description               String
+  amount                    Decimal           @db.Decimal(24, 8)
+  currency                  String            @db.VarChar(10)
+  fxRateToBase              Decimal           @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
+  baseAmount                Decimal           @map("base_amount") @db.Decimal(24, 8)
+  feeAmount                 Decimal           @default(0) @map("fee_amount") @db.Decimal(24, 8)
+  financialAccountId        String?           @map("financial_account_id") @db.Uuid // money account (from-account for transfers)
+  counterFinancialAccountId String?           @map("counter_financial_account_id") @db.Uuid // to-account for transfers
+  categoryId                String?           @map("category_id") @db.Uuid
+  debitAccountId            String?           @map("debit_account_id") @db.Uuid // ADJUSTMENT only
+  creditAccountId           String?           @map("credit_account_id") @db.Uuid // ADJUSTMENT only
+  departmentId              String?           @map("department_id") @db.Uuid
+  clientId                  String?           @map("client_id") @db.Uuid
+  projectId                 String?           @map("project_id") @db.Uuid
+  shareholderId             String?           @map("shareholder_id") @db.Uuid
+  counterparty              String?
+  direction                 String?           @db.VarChar(3) // REFUND: IN (money back to us) or OUT (refund to a client)
+  settlementStatus          SettlementStatus  @default(PAID) @map("settlement_status")
+  settledAmount             Decimal           @default(0) @map("settled_amount") @db.Decimal(24, 8)
+  dueDate                   DateTime?         @map("due_date") @db.Date
+  notes                     String?
+  attachmentUrl             String?           @map("attachment_url")
+  externalRef               String?           @map("external_ref") // import de-duplication key
+  journalEntryId            String?           @unique @map("journal_entry_id") @db.Uuid
+  createdById               String?           @map("created_by_id") @db.Uuid
+  postedById                String?           @map("posted_by_id") @db.Uuid
+  postedAt                  DateTime?         @map("posted_at") @db.Timestamptz(6)
+  createdAt                 DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization            Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period                  FinancialPeriod    @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  financialAccount        FinancialAccount?  @relation("TransactionAccount", fields: [financialAccountId], references: [id], onDelete: Restrict)
+  counterFinancialAccount FinancialAccount?  @relation("TransactionCounterAccount", fields: [counterFinancialAccountId], references: [id], onDelete: Restrict)
+  category                FinancialCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  debitAccount            LedgerAccount?     @relation("TransactionDebitAccount", fields: [debitAccountId], references: [id], onDelete: Restrict)
+  creditAccount           LedgerAccount?     @relation("TransactionCreditAccount", fields: [creditAccountId], references: [id], onDelete: Restrict)
+  department              Department?        @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  client                  Client?            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  project                 Project?           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  shareholder             Shareholder?       @relation(fields: [shareholderId], references: [id], onDelete: Restrict)
+  journalEntry            JournalEntry?      @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  createdBy               AppUser?           @relation("TransactionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  postedBy                AppUser?           @relation("TransactionPostedBy", fields: [postedById], references: [id], onDelete: Restrict)
+  currencyRef             Currency           @relation("TransactionCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, number])
+  @@unique([organizationId, externalRef])
+  @@index([organizationId, date])
+  @@index([periodId])
+  @@map("transactions")
+}
+
+/// Budget or forecast amount for one month and scenario. metric: REVENUE, DIRECT_COSTS, OPEX, PAYROLL,
+/// MARKETING, NET_PROFIT, CASH_RESERVE or ACCOUNT (then ledgerAccountId is set). scopeKey makes the
+/// line unique per metric/account/department/project.
+model BudgetLine {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String         @map("organization_id") @db.Uuid
+  year            Int            @db.SmallInt
+  month           Int            @db.SmallInt
+  scenario        BudgetScenario @default(BASE)
+  metric          String
+  ledgerAccountId String?        @map("ledger_account_id") @db.Uuid
+  departmentId    String?        @map("department_id") @db.Uuid
+  projectId       String?        @map("project_id") @db.Uuid
+  scopeKey        String         @map("scope_key")
+  amount          Decimal        @db.Decimal(24, 8)
+  notes           String?
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  ledgerAccount LedgerAccount? @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  department    Department?    @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  project       Project?       @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, year, month, scenario, scopeKey])
+  @@index([organizationId, year])
+  @@map("budget_lines")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

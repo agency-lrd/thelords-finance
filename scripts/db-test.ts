@@ -127,11 +127,14 @@ async function main() {
   await equals("HR cannot approve salaries", `SELECT count(*)::int v FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'HR' AND rp.permission_key = 'salary:approve'`, 0)
   await equals("Finance Manager cannot approve payroll", `SELECT count(*)::int v FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'FINANCE_MANAGER' AND rp.permission_key = 'payroll:approve'`, 0)
   await equals("9 default departments", `SELECT count(*)::int v FROM departments`, 9)
-  await equals("chart of accounts: 34 accounts, 1 header", `SELECT json_build_array(count(*), count(*) FILTER (WHERE NOT is_postable))::text v FROM ledger_accounts`, "[34, 1]")
+  await equals("chart of accounts: 53 accounts, 1 header", `SELECT json_build_array(count(*), count(*) FILTER (WHERE NOT is_postable))::text v FROM ledger_accounts`, "[53, 1]")
   await equals("every category posts to an account", `SELECT count(*)::int v FROM financial_categories WHERE ledger_account_id IS NULL`, 0)
   await equals("Profit KPI in base currency", `SELECT (unit || ':' || currency) v FROM kpi_definitions WHERE code = 'PROFIT'`, "CURRENCY:USD")
   await ok("default configuration is idempotent", `SELECT "finance_private"."create_default_configuration"(id) FROM organizations`)
-  await equals("re-running adds nothing", `SELECT ((SELECT count(*) FROM departments) + (SELECT count(*) FROM ledger_accounts))::int v`, 43)
+  await ok("reporting configuration is idempotent", `SELECT "finance_private"."create_reporting_configuration"(id) FROM organizations`)
+  await equals("re-running adds nothing", `SELECT ((SELECT count(*) FROM departments) + (SELECT count(*) FROM ledger_accounts))::int v`, 62)
+  await equals("every P&L account is classified for statements", `SELECT count(*)::int v FROM ledger_accounts WHERE type IN ('REVENUE','EXPENSE') AND subtype NOT IN ('OPERATING_REVENUE','OTHER_INCOME','INTEREST_INCOME','COST_OF_SALES','OPERATING_EXPENSE','DEPRECIATION','AMORTIZATION','INTEREST_EXPENSE','OTHER_EXPENSE','INCOME_TAX')`, 0)
+  await equals("manual KPIs: Client NPS, Employee NPS, Managed budget", `SELECT string_agg(code, ',' ORDER BY code) v FROM kpi_definitions WHERE code <> 'PROFIT'`, "CLIENT_NPS,EMPLOYEE_NPS,MANAGED_BUDGET")
   await equals("no employees or financial records seeded",`SELECT ((SELECT count(*) FROM employees) + (SELECT count(*) FROM journal_entries) + (SELECT count(*) FROM salary_conditions) + (SELECT count(*) FROM clients))::int v`, 0)
 
   // ── Fixtures: a separate test organization ──
@@ -191,6 +194,18 @@ async function main() {
     INSERT INTO journal_lines (journal_entry_id, line_number, ledger_account_id, debit, credit) VALUES ('${id(0x997)}', 1, '${CASH}', 5, 5)`, /amounts_chk/)
   await rejects("foreign-currency line without FX rate", `INSERT INTO journal_entries (id, organization_id, period_id, entry_number, entry_date, description, updated_at) VALUES ('${id(0x996)}', '${ORG}', '${P1}', 996, '2026-01-10', 'x', now());
     INSERT INTO journal_lines (journal_entry_id, line_number, ledger_account_id, debit, transaction_currency, transaction_amount) VALUES ('${id(0x996)}', 1, '${CASH}', 5, 'EUR', 6)`, /fx_chk/)
+
+  console.log("\nmanual transactions and budgets")
+  const TX = `INSERT INTO transactions (organization_id, number, type, date, period_id, description, amount, currency, base_amount, updated_at`
+  await ok("draft transaction", `${TX}) VALUES ('${ORG}', 1, 'OPERATING_EXPENSE', '2026-01-05', '${P1}', 'Software', 100, 'USD', 100, now())`)
+  await rejects("zero amount", `${TX}) VALUES ('${ORG}', 2, 'REVENUE', '2026-01-05', '${P1}', 'x', 0, 'USD', 0, now())`, /amount_chk/)
+  await rejects("transfer to the same account", `${TX}) VALUES ('${ORG}', 3, 'INTERNAL_TRANSFER', '2026-01-05', '${P1}', 'x', 5, 'USD', 5, now())`, /transfer_chk/)
+  await rejects("posted without a journal entry", `${TX}, status) VALUES ('${ORG}', 4, 'REVENUE', '2026-01-05', '${P1}', 'x', 5, 'USD', 5, now(), 'POSTED')`, /posted_chk/)
+  await rejects("settled more than the amount", `${TX}, settled_amount) VALUES ('${ORG}', 5, 'REVENUE', '2026-01-05', '${P1}', 'x', 5, 'USD', 5, now(), 6)`, /settled_chk/)
+  await ok("delete a draft", `DELETE FROM transactions WHERE number = 1`)
+  await rejects("account budget without an account", `INSERT INTO budget_lines (organization_id, year, month, metric, scope_key, amount, updated_at) VALUES ('${ORG}', 2026, 1, 'ACCOUNT', 'ACCOUNT|||', 10, now())`, /account_chk/)
+  await ok("revenue budget", `INSERT INTO budget_lines (organization_id, year, month, metric, scope_key, amount, updated_at) VALUES ('${ORG}', 2026, 1, 'REVENUE', 'REVENUE|||', 10, now())`)
+  await rejects("duplicate budget line", `INSERT INTO budget_lines (organization_id, year, month, metric, scope_key, amount, updated_at) VALUES ('${ORG}', 2026, 1, 'REVENUE', 'REVENUE|||', 11, now())`, /duplicate key/)
 
   console.log("\neffective-dated history and precision")
   await ok("salary Jan-Mar (USD)", `INSERT INTO salary_conditions (employee_id, pay_basis, base_amount, currency, valid_from, valid_to) VALUES ('${EMP_A}', 'MONTHLY', 1000.5, 'USD', '2026-01-01', '2026-04-01')`)
