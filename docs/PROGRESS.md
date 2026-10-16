@@ -75,13 +75,12 @@ Seven migrations, all applied to the finance project (`olrbibxybsytbwblroqb`); a
 
 All integration tests run on a throwaway PGlite database; nothing is ever written to production.
 
-## Policy choices to confirm with the owner
+## Policy choices
 
-1. **Delivery payroll is a cost of services.** Payroll of departments marked "cost of sales" (InfluLords,
-   ViralVerse, TrafficLords, AI Production, Special Projects) is shown under cost of services, which lowers
-   gross profit. Other departments' payroll is operating expense. To show all payroll under operating
-   expenses, as in the requested P&L layout, switch each department to "Operating expense" on
-   `/departments`. This affects new payroll postings only.
+1. **Delivery payroll is a cost of services (confirmed by the owner, 2026-10-17).** Payroll of departments
+   marked "cost of sales" (InfluLords, ViralVerse, TrafficLords, AI Production, Special Projects) is shown under
+   cost of services, which lowers gross profit. Other departments' payroll is operating expense. A department's
+   classification can be changed on `/departments`; the change affects new payroll postings only.
 2. **No year-end closing entries.** Prior-year results appear on the balance sheet as retained earnings,
    computed from the ledger.
 3. **Forecasts.** When a scenario has a budget for a month, the forecast uses it. Otherwise it uses the
