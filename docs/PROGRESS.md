@@ -2,109 +2,107 @@
 
 Last updated: 2026-10-17
 
-## Status by phase
+## Status
 
-| Phase | Scope | Status |
+| Area | Status |
+| --- | --- |
+| Auth, Super Admin onboarding, roles | Done. The Super Admin (agency@thelords.group) is active in production |
+| Employees, departments, teams | Done |
+| Financial sheet: payroll, KPI rules, bonuses, approvals, payments | Done |
+| Project costs and income, department contribution | Done |
+| **Phase A**: transactions, accounts, categories, ledger integration | Done |
+| **Phase B**: P&L, EBITDA/EBIT, Cash Flow, Balance Sheet | Done |
+| **Phase C**: monthly analytics, executive dashboard, department profitability | Done |
+| **Phase D**: owners and distributions, budgets and forecasts | Done |
+| **Phase E**: AI CFO preparation (tools, anomalies, disabled state) | Done. Chat is not built yet |
+
+## How the numbers fit together
+
+- **One source of truth.** Every report reads posted journal entries through `src/lib/reports/ledger.ts`. The
+  pure builders in `src/lib/reports/statements.ts` are the only code that classifies and totals statement
+  lines. The P&L, cash flow, balance sheet, analytics, dashboard, budgets and AI tools all call them, so a
+  figure never differs between pages.
+- **Classification by chart of accounts.** P&L sections come from the account subtype; cash flow lines come
+  from the counterpart account's subtype; the balance sheet groups come from type and subtype. Nothing
+  depends on transaction text.
+- **What feeds the ledger automatically:**
+  - Payroll approval: base salary goes to 5000/6000 and bonuses to 5050/6050, by the department's
+    classification. Salary payments are posted too.
+  - Project income and costs, when confirmed or paid.
+  - Manual transactions: 13 types, each with a fixed double-entry template.
+  - Owner distributions: approval posts Dr 3200 / Cr 2700; payment posts Dr 2700 / Cr cash.
+  - Transfers, owner contributions, loans and distributions never reach revenue or EBITDA.
+- **Corrections** are made by reversal. Posted entries are immutable, and closed months are locked.
+- **Currency:** each record keeps its original amount, currency and exchange rate. Reports use the base
+  amount (USD) saved at posting time.
+
+## Pages
+
+| Page | What it does |
+| --- | --- |
+| `/` Overview | Net profit for the period vs the monthly target; 12 KPI cards; risk alerts; trends (revenue/expenses, EBITDA, net profit, cash); profit by department; top clients; biggest expenses; upcoming payments; budget vs actual; owner distributions. Every card links to its report. Period: month, quarter or year |
+| `/payroll` Financial sheet | Employee sheet plus project costs/income and department contribution (described in earlier sessions) |
+| `/transactions` | Filters and search; type-aware entry form; drafts; posting (single or bulk); reversal; payment of unpaid items; bulk grid that accepts paste from Google Sheets; CSV/XLSX import (re-importing creates no duplicates); CSV/XLSX export; reconciliation against bank statements |
+| `/pnl` | Statement by chart-of-accounts section with expandable lines and drill-down to journal lines. Compares with the previous period, the same period a year ago and the budget; filter by department or client; month, quarter or year |
+| `/cash-flow` | Direct method, reconciled to account balances; minimum reserve, surplus or deficit; burn rate, runway, upcoming obligations, overdue items; 3-scenario forecast labelled as a forecast |
+| `/balance-sheet` | Balances as of any date, with drill-down. Checks Assets = Liabilities + Equity and warns if they differ; no balancing entries are ever created |
+| `/profitability` | Metrics with tooltips for the current month, previous month, a chosen period and year to date; growth; trends; department comparison |
+| `/analytics` | January–December table plus quarter and year totals; any year; manual NPS, managed client budgets and custom metrics (double-click a cell); 9 charts; CSV/XLSX export |
+| `/budgets` | Monthly budgets and targets by metric; Base, Conservative or Aggressive scenario; per department or project; actual, variance and variance % |
+| `/owners` | Owners with effective-dated ownership and profit shares; capital, allocated, paid and outstanding amounts; distributions from an explicitly entered distributable amount, with a payout % (the rest is reinvested); approval and per-owner payment |
+| `/categories` | Income and expense categories, subcategories, and the P&L line each one maps to; new P&L lines; archive |
+| `/accounts`, `/departments`, `/employees` | Unchanged from earlier sessions |
+| `/ai-cfo` | Disabled state (no provider key); deterministic month summary and anomalies; list of the tools the AI could use for your role |
+
+## Database
+
+Seven migrations, all applied to the finance project (`olrbibxybsytbwblroqb`); all additive. The latest is
+`20261017120000_transactions_budgets`, which adds:
+
+- the `transactions` and `budget_lines` tables, with constraints, period locks and RLS;
+- 19 new chart-of-accounts lines for the requested P&L structure;
+- matching categories;
+- manual KPIs (Client NPS, Employee NPS, Managed client budget).
+
+## Tests (`npm test`)
+
+| Suite | Checks | What it covers |
 | --- | --- | --- |
-| 1 | Database migrations, authentication, Super Admin onboarding, departments, employees | Done (sign-in waits for the Supabase publishable key) |
-| 2 | Financial sheet, salary agreements, KPI rules, bonuses, payroll calculation, approvals, payments | Done |
-| 3 | Project costs and income, general expenses, transactions, department totals | Project income/costs and department contribution done; transactions list and recurring expenses not yet |
-| 4 | P&L, EBITDA/EBIT, Cash Flow, Balance Sheet, monthly analytics | Not started; the ledger already receives payroll entries |
-| 5 | Owners and investors, budgets and forecasts, AI CFO | Not started |
+| `test:unit` | 33 | Payroll engine; statements (P&L, EBITDA/EBIT, margins with zero revenue, balance sheet equation and warning, cash flow with transfers excluded, distribution rounding); number formats; XLSX/CSV; anomalies |
+| `db:test` | 125 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
+| `test:sheet` | 23 | End-to-end payroll and project income/costs |
+| `test:reports` | 15 | Every transaction type; drafts excluded; balanced entries; P&L; cash flow reconciliation; balance sheet; reversal recalculating every report; drill-down; EUR conversion; payroll integration; month continuity; quarter/year totals; owner distribution 25/25/50 not touching EBITDA; budgets; permissions |
 
-## What works now
+All integration tests run on a throwaway PGlite database; nothing is ever written to production.
 
-- **Database**: six migrations applied to the finance Supabase project (`olrbibxybsytbwblroqb`). The fifth
-  (`20261016150000_financial_sheet`) is additive only. It adds the default departments, chart of accounts,
-  income and expense categories and the Profit KPI. All of these are configuration; no financial figures were added.
-- **Security**: every table has row-level security, and API roles have no grants. Writes go only through the
-  server, which checks permissions. The database re-checks payroll approval, journal posting, salary approval
-  and adjustment approval. Wallet addresses are encrypted with AES-256-GCM (`WALLET_ENCRYPTION_KEY`) and stored
-  masked; revealing a full address is permission-checked and audited. Every change is written to the
-  append-only audit log.
-- **Financial sheet** (`/payroll`): spreadsheet-style monthly sheet with these columns: Name, Department, FIX,
-  Add Terms, Profit, Bonus, Deductions, KPI Profit, KPI Fact, Calculated, Confirm, FACT Payment, Paid,
-  Outstanding, Wallet and Start Work. Extra columns: Position, Status, Team Lead, Currency, Payment
-  status/date and Notes.
-  - Editing happens inside the cells. Arrows, Enter, Tab and Escape navigate; ⌘C/⌘V copy and paste,
-    including blocks pasted from Google Sheets. Input is accepted in either format: `$1 200,00` and
-    `1,200.00`.
-  - Departments are color-coded with subtotals, the header and first column are sticky, and the total
-    row is magenta. You can move between months, filter by department, search, and export to CSV.
-  - Changes are effective-dated: changing FIX, terms or department applies from the selected month
-    onward. Earlier months keep their history.
-  - Compensation terms per employee: fixed only, % of profit above KPI, % of total profit, % if KPI met,
-    fixed bonus if KPI met, % of base salary, or tiered, each with an optional cap.
-  - Bonuses and deductions are adjustments. They are approved immediately when the editor holds
-    `adjustment:approve`; otherwise they wait for approval.
-  - Confirming a row snapshots its payslip. Changing an input afterwards un-confirms it.
-  - Approving the month locks the sheet and posts the payroll accrual to the ledger: delivery or
-    overhead payroll by department, against payroll payable.
-  - Payments can be partial or full, from a company account, with fees and FX. Each one posts to the
-    ledger, and the run moves through PAYING to PAID.
-  - Compensation history is available per employee.
-- **Project costs and income** (on `/payroll`, below the sheet): department cards like the lower half of the
-  spreadsheet. Add a row with item + sum, then open it for category, client (existing or new), project, team,
-  date and comment. Rows count in reports only when confirmed: confirming posts revenue against receivables
-  or the expense against payables; receipts (partial allowed) and payments post the cash movement;
-  un-confirming posts a reversal. Duplicate rows are refused unless explicitly re-added; payroll categories
-  cannot be entered as costs (payroll comes from the sheet). Department contribution table and chart:
-  confirmed income − confirmed costs − department payroll, labelled as contribution, not net profit.
-- **Setup diagnostics**: a signed-in user on a misconfigured server sees which variables are missing
-  (`DATABASE_URL`, `SUPER_ADMIN_EMAIL`) instead of an error or "No access".
-- **Departments** (`/departments`): create, add subdepartments, rename, archive or restore, choose the
-  P&L classification (cost of sales or operating expense), set the head, and manage teams and team leads.
-  Each department shows its headcount and this month's payroll.
-- **Company accounts** (`/accounts`): bank accounts, USDT wallets and similar, each linked to a ledger
-  account. Balances come from posted entries.
-- **Dashboard** (`/`): this month's payroll (calculated or approved, paid, outstanding), payroll by
-  department, and items that need attention. Only real data is shown.
-- **Design**: THE LORDS look with top pill navigation and the Unbounded display font. Russian by default;
-  English is available through the RU/EN switch.
+## Policy choices to confirm with the owner
 
-## Tests
-
-`npm test` runs:
-
-- `test:unit`: 14 tests for the payroll engine and number formatting.
-- `db:test`: 112 checks of migrations, constraints, period locks, payroll workflow, RLS and seeds (PGlite).
-- `test:sheet`: a 23-step end-to-end workflow (payroll and project income/costs) on PGlite. It never connects to Supabase.
-
-## Needed from the owner
-
-**Current blocker (2026-10-17):** the Super Admin Auth account (agency@thelords.group) exists, is confirmed
-and has signed in, but no app user was created. The first-sign-in grant did not run, most likely because
-`SUPER_ADMIN_EMAIL` and/or `DATABASE_URL` are missing in Vercel. Set the variables below, redeploy, and sign in
-again: access is granted automatically on that sign-in. The setup page names anything still missing.
-
-1. **Supabase publishable key**: add `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to `.env.local`. The URL is
-   already there.
-2. **Vercel environment variables** (Production): `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`,
-   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `WALLET_ENCRYPTION_KEY` (the same value as in `.env.local`)
-   and `SUPER_ADMIN_EMAIL=agency@thelords.group`.
-3. **Supabase Auth URL configuration**: set the Site URL to `https://thelords-finance.vercel.app` and add
-   `http://localhost:3000/auth/callback` and `https://thelords-finance.vercel.app/auth/callback` to the
-   redirect URLs.
-4. **First sign-in**: open `/onboarding`, sign up with agency@thelords.group, confirm the email, then sign
-   in. That account becomes Super Admin with the Owner role.
+1. **Delivery payroll is a cost of services.** Payroll of departments marked "cost of sales" (InfluLords,
+   ViralVerse, TrafficLords, AI Production, Special Projects) is shown under cost of services, which lowers
+   gross profit. Other departments' payroll is operating expense. To show all payroll under operating
+   expenses, as in the requested P&L layout, switch each department to "Operating expense" on
+   `/departments`. This affects new payroll postings only.
+2. **No year-end closing entries.** Prior-year results appear on the balance sheet as retained earnings,
+   computed from the ledger.
+3. **Forecasts.** When a scenario has a budget for a month, the forecast uses it. Otherwise it uses the
+   3-month average operating cash flow, adjusted by -20% / 0 / +20%.
 
 ## Known limitations
 
-- Users other than the Super Admin get roles through `src/lib/data/access.ts`, which has no page yet.
-  Accounts must exist in Supabase Auth first.
-- Department heads with department-scoped roles do not see the sheet yet; the session loads
-  organization-wide permissions only.
-- Mixed currencies: KPI and bonus amounts are entered in the employee's salary currency. Sheet totals
-  include only rows in the base currency (USD) and show how many rows were left out.
-- Corrections to an approved month need an off-cycle correction run, which has no UI yet.
-- Hourly and daily pay can be calculated, but the sheet has no column for worked hours or days yet.
+- **AI CFO chat is not built.** The tools, permissions and disabled state are ready; adding
+  `ANTHROPIC_API_KEY` alone does not enable it yet.
+- **No file uploads.** Attachments are links (for example Google Drive); there is no Supabase Storage upload.
+- **Shared costs are not allocated.** Costs without a department appear only in company totals, not in
+  department profitability.
+- **No recurring expenses.** Each transaction is entered once; there is no template or schedule yet.
+- **Department heads with department-scoped roles see no reports yet.** The session loads organization-wide
+  permissions only.
+- **No user-management page.** `src/lib/data/access.ts` is ready but has no UI.
+- **Approved payroll months cannot be corrected in the UI.** There is no off-cycle correction run yet.
 
-## Next step
+## Next steps
 
-Phase 3 remainder, then Phase 4:
-1. Transactions page: a journal/transaction list with filters (date, account, department, category) and
-   manual entries (owner contributions, loans and internal transfers are posted to equity/liability/cash
-   accounts, never revenue).
-2. Recurring expenses and accounts payable/receivable lists, built from the confirmed rows.
-3. P&L from the ledger (revenue, cost of sales, gross profit, operating expenses, EBITDA, D&A, EBIT, interest,
-   tax, net profit) per month, using account subtypes from the chart of accounts.
+1. AI CFO chat: a server route that calls Claude with `toolsFor(user)` from `src/lib/ai/tools.ts`, runs only
+   `runTool`, and answers with figures from tool results only.
+2. Users & Access page on top of `src/lib/data/access.ts`.
+3. Recurring expense templates and allocation of shared costs to departments.

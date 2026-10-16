@@ -17,6 +17,8 @@ async function main() {
   const { createFinancialAccount } = await import("../src/lib/data/accounts")
   const sheet = await import("../src/lib/data/sheet")
   const { Decimal } = await import("../src/lib/money")
+  const owners = await import("../src/lib/data/owners")
+  const budgets = await import("../src/lib/data/budgets")
 
   try {
     const oct = range("month", 2026, 10)
@@ -163,6 +165,53 @@ async function main() {
       assert.equal(q4.netProfit, new Decimal("8995").add("110").sub("1000").toString())
       assert.equal(y.netProfit, q4.netProfit)
       assert.equal((await bs(range("month", 2026, 12).to)).balanced, true)
+    })
+
+    console.log("\nowners and budgets")
+    await step("owner distribution: $20,000 at 25/25/50 never touches EBITDA", async () => {
+      const ids: string[] = []
+      for (const [name, share] of [["Owner A", "0.25"], ["Owner B", "0.25"], ["Owner C", "0.5"]] as const) {
+        const id = await owners.saveOwner(admin, { id: null, name, type: "INDIVIDUAL", email: null }, prisma)
+        await owners.setStake(admin, id, { ownershipShare: new Decimal(share), profitShare: null, validFrom: d(1, 12) }, prisma)
+        ids.push(id)
+      }
+      const before = await pnl(range("month", 2026, 12))
+      const dist = await owners.createDistribution(admin, { declaredDate: d(15, 12), basisAmount: new Decimal("20000"), payoutRate: new Decimal(1), notes: null }, prisma)
+      let list = await owners.listDistributions(admin, prisma)
+      assert.deepEqual(list[0].allocations.map((a) => [a.name, a.amount]).sort(), [["Owner A", "5000"], ["Owner B", "5000"], ["Owner C", "10000"]])
+      await owners.approveDistribution(admin, dist.id, prisma)
+      const after = await pnl(range("month", 2026, 12))
+      assert.equal(after.ebitda, before.ebitda)
+      assert.equal(after.netProfit, before.netProfit)
+      const b = await bs(d(31, 12))
+      assert.equal(b.balanced, true)
+      assert.equal(b.groups.otherCurrentLiabilities.total, "20000") // distributions payable
+      list = await owners.listDistributions(admin, prisma)
+      const a = list[0].allocations.find((x) => x.name === "Owner A")!
+      await owners.payAllocation(admin, a.id, { financialAccountId: bank.id, date: d(20, 12), reference: null }, prisma)
+      const f = (await flow(range("month", 2026, 12))).flow
+      assert.equal(f.lines.ownerDistributions, "-5000")
+      const o = (await owners.listOwners(admin, d(31, 12), prisma)).find((x) => x.name === "Owner A")!
+      assert.equal(o.allocated, "5000")
+      assert.equal(o.paid, "5000")
+      // A later ownership change does not rewrite this allocation.
+      await owners.setStake(admin, ids[2], { ownershipShare: new Decimal("0.4"), profitShare: null, validFrom: new Date(Date.UTC(2027, 0, 1)) }, prisma)
+      list = await owners.listDistributions(admin, prisma)
+      assert.equal(list[0].allocations.find((x) => x.name === "Owner C")!.amount, "10000")
+      await assert.rejects(() => owners.setStake(admin, ids[0], { ownershipShare: new Decimal("0.5"), profitShare: null, validFrom: new Date(Date.UTC(2026, 11, 2)) }, prisma), /exceed/)
+    })
+
+    await step("budgets: totals by range, actual vs budget, scenarios kept apart", async () => {
+      for (const month of [10, 11, 12]) {
+        await budgets.setBudgetLine(admin, { year: 2026, month, scenario: "BASE", metric: "REVENUE", ledgerAccountId: null, departmentId: null, projectId: null, amount: new Decimal("5000") }, prisma)
+      }
+      await budgets.setBudgetLine(admin, { year: 2026, month: 10, scenario: "AGGRESSIVE", metric: "REVENUE", ledgerAccountId: null, departmentId: null, projectId: null, amount: new Decimal("9000") }, prisma)
+      const q4 = await budgets.budgetForRange(admin, range("quarter", 2026, 4), {}, prisma)
+      assert.equal(q4.metric("REVENUE"), "15000")
+      const aggressive = await budgets.budgetForRange(admin, oct, { scenario: "AGGRESSIVE" }, prisma)
+      assert.equal(aggressive.metric("REVENUE"), "9000")
+      await budgets.setBudgetLine(admin, { year: 2026, month: 12, scenario: "BASE", metric: "REVENUE", ledgerAccountId: null, departmentId: null, projectId: null, amount: null }, prisma)
+      assert.equal((await budgets.budgetForRange(admin, range("quarter", 2026, 4), {}, prisma)).metric("REVENUE"), "10000")
     })
 
     await step("permissions: posting needs journal:post; reports need reports:read", async () => {

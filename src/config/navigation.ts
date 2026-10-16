@@ -9,6 +9,10 @@ import {
   Receipt,
   Scale,
   Sparkles,
+  Tags,
+  Target,
+  TrendingUp,
+  Crown,
   Users,
   type LucideIcon,
 } from "lucide-react"
@@ -26,15 +30,19 @@ export type NavItem = {
 export const navItems: NavItem[] = [
   { key: "dashboard", href: "/", icon: LayoutDashboard },
   { key: "sheet", href: "/payroll", icon: FileSpreadsheet },
+  { key: "transactions", href: "/transactions", icon: ArrowLeftRight },
+  { key: "pnl", href: "/pnl", icon: Receipt },
+  { key: "cashFlow", href: "/cash-flow", icon: Activity },
+  { key: "balanceSheet", href: "/balance-sheet", icon: Scale },
+  { key: "profitability", href: "/profitability", icon: TrendingUp },
+  { key: "analytics", href: "/analytics", icon: ChartColumn },
+  { key: "budgets", href: "/budgets", icon: Target },
+  { key: "owners", href: "/owners", icon: Crown },
   { key: "employees", href: "/employees", icon: Users },
   { key: "departments", href: "/departments", icon: Building2 },
   { key: "accounts", href: "/accounts", icon: Landmark },
-  { key: "transactions", href: "/transactions", icon: ArrowLeftRight, soon: true },
-  { key: "pnl", href: "/pnl", icon: Receipt, soon: true },
-  { key: "cashFlow", href: "/cash-flow", icon: Activity, soon: true },
-  { key: "balanceSheet", href: "/balance-sheet", icon: Scale, soon: true },
-  { key: "analytics", href: "/analytics", icon: ChartColumn, soon: true },
-  { key: "aiCfo", href: "/ai-cfo", icon: Sparkles, soon: true },
+  { key: "categories", href: "/categories", icon: Tags },
+  { key: "aiCfo", href: "/ai-cfo", icon: Sparkles },
 ]
 
 export function getNavItem(href: string): NavItem {

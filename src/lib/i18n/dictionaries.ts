@@ -33,6 +33,10 @@ const ru = {
     aiCfo: "AI CFO",
     accounts: "Счета",
     access: "Доступ",
+    profitability: "Прибыльность",
+    budgets: "Бюджеты",
+    owners: "Собственники",
+    categories: "Категории",
   },
   greeting: { morning: "Доброе утро", day: "Добрый день", evening: "Добрый вечер", night: "Доброй ночи" },
   dashboard: {
@@ -298,6 +302,10 @@ const en: DeepString<Dictionary> = {
     aiCfo: "AI CFO",
     accounts: "Accounts",
     access: "Access",
+    profitability: "Profitability",
+    budgets: "Budgets",
+    owners: "Owners",
+    categories: "Categories",
   },
   greeting: { morning: "Good morning", day: "Good afternoon", evening: "Good evening", night: "Good night" },
   dashboard: {
