@@ -14,12 +14,20 @@ export const maxDuration = 300
 
 const MAX_BODY_BYTES = 64 * 1024
 
+function sameOrigin(origin: string | null, host: string) {
+  if (!origin) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false
+  }
+}
+
 const json = (status: number, code: string) => NextResponse.json({ error: code }, { status, headers: { "Cache-Control": "no-store" } })
 
 export async function POST(request: NextRequest) {
   // Same-origin only (the session cookie is also SameSite=Lax).
-  const origin = request.headers.get("origin")
-  if (!origin || new URL(origin).host !== request.nextUrl.host) return json(403, "forbidden")
+  if (!sameOrigin(request.headers.get("origin"), request.nextUrl.host)) return json(403, "forbidden")
   if (!request.headers.get("content-type")?.startsWith("application/json")) return json(415, "unsupported_media_type")
 
   const session = await getSession()
