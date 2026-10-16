@@ -1,6 +1,6 @@
 # THE LORDS Finance OS: progress
 
-Last updated: 2026-10-17
+Last updated: AI CFO release (migration 20261019090000_ai_cfo)
 
 ## Status
 
@@ -14,7 +14,7 @@ Last updated: 2026-10-17
 | **Phase B**: P&L, EBITDA/EBIT, Cash Flow, Balance Sheet | Done |
 | **Phase C**: monthly analytics, executive dashboard, department profitability | Done |
 | **Phase D**: owners and distributions, budgets and forecasts | Done |
-| **Phase E**: AI CFO preparation (tools, anomalies, disabled state) | Done. Chat is not built yet |
+| **AI CFO** (phases 1–3): tools, Claude chat, analysis, forecasts, monthly CFO report | Done. Needs `ANTHROPIC_API_KEY` in Vercel to answer; everything else works without it. See `docs/AI-CFO.md` |
 | Password vault "Пароли": access register (metadata only) | Done. Decision: passwords stay in Bitwarden/1Password (Option A in `docs/SECURITY-VAULT.md`); Finance OS never stores them |
 
 ## How the numbers fit together
@@ -54,28 +54,29 @@ Last updated: 2026-10-17
 | `/categories` | Income and expense categories, subcategories, and the P&L line each one maps to; new P&L lines; archive |
 | `/accounts`, `/departments`, `/employees` | Unchanged from earlier sessions |
 | `/vault` Пароли | Credential access register: service, login URL, username, department, category, responsible employee, access level, notes, link to the item in Bitwarden/1Password. Sharing is explicit per entry (Owner and Super Admin see everything; department membership grants nothing). History of views, copies, changes and shares; refuses text that looks like a secret; browser-only password generator. **No passwords are stored**; see `docs/SECURITY-VAULT.md` |
-| `/ai-cfo` | Disabled state (no provider key); deterministic month summary and anomalies; list of the tools the AI could use for your role |
+| `/ai-cfo` | AI CFO: key figures, rule-based risk alerts and a 3-scenario forecast (calculated, no AI); streaming chat with Claude that answers only through 16 read-only financial tools, shows the calculations and source links, and suggests follow-ups. Period, department, focus and attached reports as context; private chat history. Shows a configuration notice and disables the chat when no provider key is set |
+| `/ai-cfo/report` | Monthly CFO report in 10 sections from the same tools, rule-based recommended actions, optional AI commentary; PDF export through the browser's print dialog |
 
 ## Database
 
-Seven migrations, all applied to the finance project (`olrbibxybsytbwblroqb`); all additive. The latest is
-`20261017120000_transactions_budgets`, which adds:
-
-- the `transactions` and `budget_lines` tables, with constraints, period locks and RLS;
-- 19 new chart-of-accounts lines for the requested P&L structure;
-- matching categories;
-- manual KPIs (Client NPS, Employee NPS, Managed client budget).
+Nine migrations, all additive. The latest, `20261019090000_ai_cfo`, adds the private AI chat history
+(`ai_conversations`, `ai_messages` with token usage and estimated cost). Messages are append-only,
+conversations cannot be deleted (only hidden), a message must belong to its conversation's user and
+organization, RLS is on and the browser roles have no privileges. It changes no existing table.
 
 ## Tests (`npm test`)
 
 | Suite | Checks | What it covers |
 | --- | --- | --- |
-| `test:unit` | 33 | Payroll engine; statements (P&L, EBITDA/EBIT, margins with zero revenue, balance sheet equation and warning, cash flow with transfers excluded, distribution rounding); number formats; XLSX/CSV; anomalies |
-| `db:test` | 125 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
+| `test:unit` | 57 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; follow-up parsing; cost estimates |
+| `db:test` | 136 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
 | `test:sheet` | 23 | End-to-end payroll and project income/costs |
-| `test:reports` | 15 | Every transaction type; drafts excluded; balanced entries; P&L; cash flow reconciliation; balance sheet; reversal recalculating every report; drill-down; EUR conversion; payroll integration; month continuity; quarter/year totals; owner distribution 25/25/50 not touching EBITDA; budgets; permissions |
+| `test:reports` | 16 | Every transaction type; drafts excluded; balanced entries; P&L; cash flow reconciliation; balance sheet; reversal; drill-down; EUR conversion; payroll integration; quarter/year totals; owner distributions; budgets; permissions |
+| `test:vault` | 9 | Access register sharing, history and the secret guard |
+| `test:ai` | 19 | Every AI tool's result envelope; figures equal the reports; completeness; strict input validation; no write tools; role permissions; organization isolation; chat loop with a scripted model (tool calls, errors, refusal, round and spending limits, rate limits, attachments, history); private conversations; append-only chat tables |
 
-All integration tests run on a throwaway PGlite database; nothing is ever written to production.
+All integration tests run on a throwaway PGlite database; nothing is ever written to production, and the
+AI tests never call the AI provider.
 
 ## Policy choices
 
@@ -90,8 +91,10 @@ All integration tests run on a throwaway PGlite database; nothing is ever writte
 
 ## Known limitations
 
-- **AI CFO chat is not built.** The tools, permissions and disabled state are ready; adding
-  `ANTHROPIC_API_KEY` alone does not enable it yet.
+- **AI CFO needs organization-wide `reports:read`.** Department-scoped roles do not get the AI CFO yet.
+- **AI CFO attachments are internal reports only.** Uploading external files (PDF, Excel) to the AI is not
+  supported: they would be untrusted input with possible personal data.
+- **PDF export uses the browser's print dialog** ("Save as PDF"); there is no server-generated PDF file.
 - **No file uploads.** Attachments are links (for example Google Drive); there is no Supabase Storage upload.
 - **Shared costs are not allocated.** Costs without a department appear only in company totals, not in
   department profitability.
@@ -103,7 +106,6 @@ All integration tests run on a throwaway PGlite database; nothing is ever writte
 
 ## Next steps
 
-1. AI CFO chat: a server route that calls Claude with `toolsFor(user)` from `src/lib/ai/tools.ts`, runs only
-   `runTool`, and answers with figures from tool results only.
+1. Add `ANTHROPIC_API_KEY` in Vercel (see `docs/AI-CFO.md`), then try the five prompt cards on `/ai-cfo`.
 2. Users & Access page on top of `src/lib/data/access.ts`.
 3. Recurring expense templates and allocation of shared costs to departments.

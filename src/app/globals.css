@@ -97,3 +97,27 @@
     color-scheme: dark;
   }
 }
+/* Printing (the CFO report's PDF export): light page, no app chrome or controls. */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  :root {
+    --background: #ffffff;
+    --foreground: #111111;
+    --card: #ffffff;
+    --card-foreground: #111111;
+    --muted: #f2f2f2;
+    --muted-foreground: #555555;
+    --border: #d9d9d9;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+  [data-print-hide] {
+    display: none !important;
+  }
+}

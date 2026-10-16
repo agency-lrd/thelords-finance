@@ -575,6 +575,8 @@ model Organization {
   budgetLines      BudgetLine[]
   vaultCategories  VaultCategory[]
   vaultCredentials VaultCredential[]
+  aiConversations  AiConversation[]
+  aiMessages       AiMessage[]
 
   @@map("organizations")
 }
@@ -611,6 +613,8 @@ model AppUser {
   vaultUpdated          VaultCredential[]      @relation("VaultCredentialUpdatedBy")
   vaultGrants           VaultCredentialGrant[] @relation("VaultGrantUser")
   vaultGrantsGiven      VaultCredentialGrant[] @relation("VaultGrantGrantedBy")
+  aiConversations       AiConversation[]
+  aiMessages            AiMessage[]
 
   @@map("app_users")
 }
@@ -1928,4 +1932,74 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([actorUserId, occurredAt])
   @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI CFO: chat history and usage (read-only assistant; never writes financial data)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+
+  @@map("ai_message_role")
+}
+
+enum AiMessageStatus {
+  COMPLETE
+  TRUNCATED
+  REFUSED
+  ERROR
+
+  @@map("ai_message_status")
+}
+
+/// One AI CFO conversation. Private to the user who started it (RLS: owner only).
+model AiConversation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  title          String
+  locale         String    @default("ru") @db.VarChar(5)
+  context        Json? // last selected period, department, focus (no figures)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         AppUser      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  messages     AiMessage[]
+
+  @@index([organizationId, userId, updatedAt])
+  @@map("ai_conversations")
+}
+
+/// A message in an AI CFO conversation. Assistant messages keep the tool calls with their source
+/// references, and the token usage and estimated cost used for spending limits.
+model AiMessage {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversationId   String          @map("conversation_id") @db.Uuid
+  organizationId   String          @map("organization_id") @db.Uuid
+  userId           String          @map("user_id") @db.Uuid
+  role             AiMessageRole
+  status           AiMessageStatus @default(COMPLETE)
+  content          String
+  tools            Json? // [{ name, input, ok, period, sources }]
+  followUps        Json?           @map("follow_ups")
+  model            String?
+  inputTokens      Int             @default(0) @map("input_tokens")
+  outputTokens     Int             @default(0) @map("output_tokens")
+  cacheReadTokens  Int             @default(0) @map("cache_read_tokens")
+  cacheWriteTokens Int             @default(0) @map("cache_write_tokens")
+  costUsd          Decimal         @default(0) @map("cost_usd") @db.Decimal(12, 6)
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         AppUser        @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([conversationId, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@map("ai_messages")
 }

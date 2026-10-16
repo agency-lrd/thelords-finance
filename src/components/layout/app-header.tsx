@@ -9,7 +9,7 @@ import { getDictionary } from "@/lib/i18n/server"
 
 export function AppHeader() {
   return (
-    <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur supports-backdrop-filter:bg-background/70">
+    <header data-print-hide className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur supports-backdrop-filter:bg-background/70">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-3 px-4 pt-4 sm:px-8">
         <div className="flex items-center gap-4">
           <Brand />
