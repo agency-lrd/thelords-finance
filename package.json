@@ -14,7 +14,8 @@
     "db:prisma": "tsx scripts/prisma-tls.ts",
     "db:check:migrate": "echo 'SELECT 1;' | tsx scripts/prisma-tls.ts db execute --stdin",
     "db:test": "tsx scripts/db-test.ts",
-    "db:inspect": "tsx scripts/db-inspect.ts"
+    "db:inspect": "tsx scripts/db-inspect.ts",
+    "admin:grant-super": "tsx scripts/grant-super-admin.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
