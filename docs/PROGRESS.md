@@ -1,6 +1,6 @@
 # THE LORDS Finance OS: progress
 
-Last updated: 2026-10-16
+Last updated: 2026-10-17
 
 ## Status by phase
 
@@ -8,13 +8,13 @@ Last updated: 2026-10-16
 | --- | --- | --- |
 | 1 | Database migrations, authentication, Super Admin onboarding, departments, employees | Done (sign-in waits for the Supabase publishable key) |
 | 2 | Financial sheet, salary agreements, KPI rules, bonuses, payroll calculation, approvals, payments | Done |
-| 3 | Project costs and income, general expenses, transactions, department totals | Data layer partly exists (`src/lib/data/projects.ts`); no UI yet |
+| 3 | Project costs and income, general expenses, transactions, department totals | Project income/costs and department contribution done; transactions list and recurring expenses not yet |
 | 4 | P&L, EBITDA/EBIT, Cash Flow, Balance Sheet, monthly analytics | Not started; the ledger already receives payroll entries |
 | 5 | Owners and investors, budgets and forecasts, AI CFO | Not started |
 
 ## What works now
 
-- **Database**: five migrations applied to the finance Supabase project (`olrbibxybsytbwblroqb`). The fifth
+- **Database**: six migrations applied to the finance Supabase project (`olrbibxybsytbwblroqb`). The fifth
   (`20261016150000_financial_sheet`) is additive only. It adds the default departments, chart of accounts,
   income and expense categories and the Profit KPI. All of these are configuration; no financial figures were added.
 - **Security**: every table has row-level security, and API roles have no grants. Writes go only through the
@@ -43,6 +43,15 @@ Last updated: 2026-10-16
   - Payments can be partial or full, from a company account, with fees and FX. Each one posts to the
     ledger, and the run moves through PAYING to PAID.
   - Compensation history is available per employee.
+- **Project costs and income** (on `/payroll`, below the sheet): department cards like the lower half of the
+  spreadsheet. Add a row with item + sum, then open it for category, client (existing or new), project, team,
+  date and comment. Rows count in reports only when confirmed: confirming posts revenue against receivables
+  or the expense against payables; receipts (partial allowed) and payments post the cash movement;
+  un-confirming posts a reversal. Duplicate rows are refused unless explicitly re-added; payroll categories
+  cannot be entered as costs (payroll comes from the sheet). Department contribution table and chart:
+  confirmed income − confirmed costs − department payroll, labelled as contribution, not net profit.
+- **Setup diagnostics**: a signed-in user on a misconfigured server sees which variables are missing
+  (`DATABASE_URL`, `SUPER_ADMIN_EMAIL`) instead of an error or "No access".
 - **Departments** (`/departments`): create, add subdepartments, rename, archive or restore, choose the
   P&L classification (cost of sales or operating expense), set the head, and manage teams and team leads.
   Each department shows its headcount and this month's payroll.
@@ -58,10 +67,15 @@ Last updated: 2026-10-16
 `npm test` runs:
 
 - `test:unit`: 14 tests for the payroll engine and number formatting.
-- `db:test`: 111 checks of migrations, constraints, period locks, payroll workflow, RLS and seeds (PGlite).
-- `test:sheet`: a 15-step end-to-end workflow on PGlite. It never connects to Supabase.
+- `db:test`: 112 checks of migrations, constraints, period locks, payroll workflow, RLS and seeds (PGlite).
+- `test:sheet`: a 23-step end-to-end workflow (payroll and project income/costs) on PGlite. It never connects to Supabase.
 
 ## Needed from the owner
+
+**Current blocker (2026-10-17):** the Super Admin Auth account (agency@thelords.group) exists, is confirmed
+and has signed in, but no app user was created. The first-sign-in grant did not run, most likely because
+`SUPER_ADMIN_EMAIL` and/or `DATABASE_URL` are missing in Vercel. Set the variables below, redeploy, and sign in
+again: access is granted automatically on that sign-in. The setup page names anything still missing.
 
 1. **Supabase publishable key**: add `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to `.env.local`. The URL is
    already there.
@@ -87,7 +101,10 @@ Last updated: 2026-10-16
 
 ## Next step
 
-Phase 3: build pages for project income and project costs, grouped by department, on top of
-`src/lib/data/projects.ts`. Post recognized income and costs to the ledger; the payroll postings in
-`src/lib/data/sheet.ts` (`postJournal` in `src/lib/data/ledger.ts`) show the pattern. Then add the
-department profitability view, with revenue, direct costs, payroll, shared costs and contribution margin.
+Phase 3 remainder, then Phase 4:
+1. Transactions page: a journal/transaction list with filters (date, account, department, category) and
+   manual entries (owner contributions, loans and internal transfers are posted to equity/liability/cash
+   accounts, never revenue).
+2. Recurring expenses and accounts payable/receivable lists, built from the confirmed rows.
+3. P&L from the ledger (revenue, cost of sales, gross profit, operating expenses, EBITDA, D&A, EBIT, interest,
+   tax, net profit) per month, using account subtypes from the chart of accounts.

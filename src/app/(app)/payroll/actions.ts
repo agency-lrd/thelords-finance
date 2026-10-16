@@ -18,6 +18,7 @@ import {
   type RuleConfig,
   type SheetField,
 } from "@/lib/data/sheet"
+import { addLedgerEntry, deleteLedgerEntry, recordSettlement, setLedgerConfirmed, updateLedgerEntry } from "@/lib/data/project-ledger"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { Decimal } from "@/lib/money"
 import { parseMonth } from "@/lib/period"
@@ -162,6 +163,113 @@ export async function historyAction(employeeId: string) {
     const user = await sessionUser()
     if (!user.permissions.has("salary:read")) throw new AuthorizationError("You do not have permission to view salary history.")
     return { ok: true as const, history: await compensationHistory(user, employeeId) }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+// ── Project income and costs ──
+
+export type LedgerFormInput = {
+  departmentId: string
+  item: string
+  amount: string
+  currency: string
+  categoryId: string
+  projectId: string
+  clientId: string
+  clientName: string
+  teamId: string
+  date: string
+  notes: string
+}
+
+function ledgerInput(input: Partial<LedgerFormInput>) {
+  const id = (v: string | undefined) => (v === undefined ? undefined : v.trim() ? v.trim() : null)
+  const out: Record<string, unknown> = {}
+  if (input.departmentId !== undefined) out.departmentId = input.departmentId
+  if (input.item !== undefined) out.item = input.item
+  if (input.amount !== undefined) {
+    if (!/^\d{1,16}(\.\d{1,8})?$/.test(input.amount.trim())) throw new UserInputError("Amount must be a positive number.")
+    out.amount = new Decimal(input.amount.trim())
+  }
+  if (input.currency !== undefined) out.currency = input.currency
+  if (input.categoryId !== undefined) out.categoryId = id(input.categoryId)
+  if (input.projectId !== undefined) out.projectId = id(input.projectId)
+  if (input.clientId !== undefined) out.clientId = id(input.clientId)
+  if (input.clientName !== undefined) out.clientName = id(input.clientName)
+  if (input.teamId !== undefined) out.teamId = id(input.teamId)
+  if (input.date !== undefined) {
+    if (input.date && !/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new UserInputError("Invalid date.")
+    out.date = input.date ? new Date(`${input.date}T00:00:00Z`) : null
+  }
+  if (input.notes !== undefined) out.notes = input.notes.trim() || null
+  return out
+}
+
+const KINDS = ["income", "cost"] as const
+function kindOf(kind: string) {
+  if (!KINDS.includes(kind as (typeof KINDS)[number])) throw new UserInputError("Unknown row type.")
+  return kind as (typeof KINDS)[number]
+}
+
+function ledgerDone() {
+  revalidatePath("/payroll")
+  revalidatePath("/")
+  revalidatePath("/departments")
+  return { ok: true as const }
+}
+
+export async function addLedgerAction(monthKey: string, kind: string, input: LedgerFormInput, allowDuplicate = false): Promise<CellResult & { duplicate?: boolean }> {
+  try {
+    const user = await authorize("project_finance:manage")
+    const parsed = ledgerInput(input) as unknown as Parameters<typeof addLedgerEntry>[3]
+    await addLedgerEntry(user, month(monthKey), kindOf(kind), { ...parsed, allowDuplicate })
+    return ledgerDone()
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("DUPLICATE")) return { ok: false, message: error.message, duplicate: true }
+    return fail(error)
+  }
+}
+
+export async function updateLedgerAction(kind: string, id: string, input: Partial<LedgerFormInput>): Promise<CellResult> {
+  try {
+    const user = await authorize("project_finance:manage")
+    await updateLedgerEntry(user, kindOf(kind), id, ledgerInput(input))
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function deleteLedgerAction(kind: string, id: string): Promise<CellResult> {
+  try {
+    const user = await authorize("project_finance:manage")
+    await deleteLedgerEntry(user, kindOf(kind), id)
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function confirmLedgerAction(kind: string, id: string, confirmed: boolean): Promise<CellResult> {
+  try {
+    const user = await authorize("project_finance:manage")
+    await setLedgerConfirmed(user, kindOf(kind), id, confirmed)
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function settleLedgerAction(kind: string, id: string, input: { amount: string; financialAccountId: string; date: string }): Promise<CellResult> {
+  try {
+    const user = await authorize("project_finance:manage")
+    const amount = input.amount.trim()
+    if (amount && !/^\d{1,16}(\.\d{1,8})?$/.test(amount)) throw new UserInputError("Amount must be a positive number.")
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new UserInputError("Choose the date.")
+    await recordSettlement(user, kindOf(kind), id, { amount: amount ? new Decimal(amount) : null, financialAccountId: input.financialAccountId, date: new Date(`${input.date}T00:00:00Z`) })
+    return ledgerDone()
   } catch (error) {
     return fail(error)
   }

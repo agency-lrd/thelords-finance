@@ -14,6 +14,7 @@ import { formatAmount, formatDate, monthName, normalizeNumber, type Locale } fro
 import { dictionaries } from "@/lib/i18n/dictionaries"
 import type { RuleConfig, RuleModel, SheetRow } from "@/lib/data/sheet"
 
+import { NO_DEPT, PALETTE } from "./palette"
 import {
   addEmployeeAction,
   approveMonthAction,
@@ -81,19 +82,6 @@ type Col = { key: ColKey; kind: Kind; width: number; field?: string; can: boolea
 
 const MONEY_TOTALS: ColKey[] = ["fix", "variable", "bonus", "deduction", "kpiTarget", "kpiActual", "calculated", "approved", "paid", "outstanding"]
 
-// Department colors (like the colored Department column of the original sheet).
-const PALETTE = [
-  { chip: "bg-pink-500/85 text-white", name: "bg-pink-500/15", bar: "bg-pink-500" },
-  { chip: "bg-amber-400/90 text-black", name: "bg-amber-400/15", bar: "bg-amber-400" },
-  { chip: "bg-violet-600/90 text-white", name: "bg-violet-600/20", bar: "bg-violet-500" },
-  { chip: "bg-sky-400/85 text-black", name: "bg-sky-400/15", bar: "bg-sky-400" },
-  { chip: "bg-rose-300/90 text-black", name: "bg-rose-300/15", bar: "bg-rose-300" },
-  { chip: "bg-emerald-500/85 text-black", name: "bg-emerald-500/15", bar: "bg-emerald-500" },
-  { chip: "bg-orange-500/85 text-black", name: "bg-orange-500/15", bar: "bg-orange-500" },
-  { chip: "bg-fuchsia-600/85 text-white", name: "bg-fuchsia-600/15", bar: "bg-fuchsia-500" },
-  { chip: "bg-teal-400/85 text-black", name: "bg-teal-400/15", bar: "bg-teal-400" },
-]
-const NO_DEPT = { chip: "bg-muted text-muted-foreground", name: "", bar: "bg-muted-foreground" }
 
 const STATUSES = ["ONBOARDING", "ACTIVE", "ON_LEAVE", "TERMINATED"] as const
 const CURRENCIES = ["USD", "USDT", "EUR", "GBP"] as const

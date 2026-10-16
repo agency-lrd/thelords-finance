@@ -34,7 +34,6 @@ function requireManage(user: SessionUser) {
   if (!user.permissions.has("project_finance:manage")) throw new UserInputError("You do not have permission to record project income and costs.")
 }
 
-const str = (v: Prisma.Decimal | Decimal | null | undefined) => (v === null || v === undefined ? null : new Decimal(v).toString())
 const iso = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null)
 
 // ─────────────────────────────────────────────────────────────────────────────
