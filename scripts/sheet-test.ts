@@ -46,6 +46,7 @@ async function main() {
 
   const { PrismaClient } = await import("../src/generated/prisma/client")
   const sheet = await import("../src/lib/data/sheet")
+  const pl = await import("../src/lib/data/project-ledger")
   const { PERMISSIONS } = await import("../src/lib/authz/permissions")
   const { Decimal } = await import("../src/lib/money")
   const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL, max: 1 }) })
@@ -200,6 +201,84 @@ async function main() {
     })
 
     await step("the whole ledger balances", async () => {
+      const [t] = await prisma.$queryRaw<{ d: string; c: string }[]>`SELECT sum(debit)::text d, sum(credit)::text c FROM journal_lines`
+      assert.equal(new Decimal(t.d).toString(), new Decimal(t.c).toString())
+    })
+
+    console.log("\nproject income and costs")
+    const entry = (item: string, amount: string, extra: Partial<Parameters<typeof pl.addLedgerEntry>[3]> = {}) => ({
+      departmentId: infl.id, item, amount: new Decimal(amount), currency: "USD", categoryId: null, projectId: null, clientId: null, clientName: null, teamId: null, date: null, notes: null, ...extra,
+    })
+    const accountBalance = async (code: string) => {
+      const [r] = await prisma.$queryRaw<{ v: string | null }[]>`
+        SELECT (sum(l.debit) - sum(l.credit))::text v FROM journal_lines l JOIN ledger_accounts a ON a.id = l.ledger_account_id WHERE a.code = ${code}`
+      return new Decimal(r.v ?? 0).toString()
+    }
+    let incomeId = ""
+    let costId = ""
+
+    await step("income with a client creates the client and a client project in the department", async () => {
+      const row = await pl.addLedgerEntry(admin, sep, "income", entry("Team Test", "8352", { clientName: "Stark Team" }), prisma)
+      incomeId = row.id
+      const ledger = await pl.getProjectLedger(admin, sep, prisma)
+      const r = ledger.income.find((x) => x.id === incomeId)!
+      assert.equal(r.clientName, "Stark Team")
+      assert.equal(r.departmentId, infl.id)
+      assert.equal(r.categoryName, "Agency revenue")
+      assert.equal(r.confirmed, false)
+    })
+
+    await step("duplicate rows are refused unless explicitly allowed", async () => {
+      await rejects(() => pl.addLedgerEntry(admin, sep, "income", entry("team test", "8352", { clientName: "Stark Team" }), prisma), /DUPLICATE/)
+    })
+
+    await step("costs default to the department's category; payroll categories are refused", async () => {
+      const row = await pl.addLedgerEntry(admin, sep, "cost", entry("Mail INFL", "100"), prisma)
+      costId = row.id
+      const r = (await pl.getProjectLedger(admin, sep, prisma)).costs.find((x) => x.id === costId)!
+      assert.equal(r.categoryName, "Production tools and services")
+      const payrollCategory = await prisma.financialCategory.findFirstOrThrow({ where: { code: "DELIVERY-PAYROLL" } })
+      await rejects(() => pl.addLedgerEntry(admin, sep, "cost", entry("ФОТ", "3500", { categoryId: payrollCategory.id }), prisma), /Payroll comes from the financial sheet/)
+    })
+
+    await step("unconfirmed rows are not in the ledger; confirming posts revenue and expense", async () => {
+      assert.equal(await accountBalance("4000"), "0")
+      await pl.setLedgerConfirmed(admin, "income", incomeId, true, prisma)
+      await pl.setLedgerConfirmed(admin, "cost", costId, true, prisma)
+      assert.equal(await accountBalance("4000"), "-8352")
+      assert.equal(await accountBalance("1200"), "8352")
+      assert.equal(await accountBalance("5200"), "100")
+      assert.equal(await accountBalance("2000"), "-100")
+    })
+
+    await step("confirmed rows are locked except the comment", async () => {
+      await rejects(() => pl.updateLedgerEntry(admin, "income", incomeId, { amount: new Decimal("9000") }, prisma), /confirmed/)
+      await pl.updateLedgerEntry(admin, "income", incomeId, { notes: "Proof in Drive" }, prisma)
+    })
+
+    await step("partial then full receipt moves cash and clears receivables", async () => {
+      const account = await prisma.financialAccount.findFirstOrThrow()
+      await pl.recordSettlement(admin, "income", incomeId, { amount: new Decimal("5000"), financialAccountId: account.id, date: new Date("2026-09-20T00:00:00Z") }, prisma)
+      let r = (await pl.getProjectLedger(admin, sep, prisma)).income.find((x) => x.id === incomeId)!
+      assert.equal(r.status, "PARTIALLY_RECEIVED")
+      await rejects(() => pl.recordSettlement(admin, "income", incomeId, { amount: new Decimal("4000"), financialAccountId: account.id, date: new Date("2026-09-21T00:00:00Z") }, prisma), /more than/)
+      await pl.recordSettlement(admin, "income", incomeId, { amount: null, financialAccountId: account.id, date: new Date("2026-09-21T00:00:00Z") }, prisma)
+      r = (await pl.getProjectLedger(admin, sep, prisma)).income.find((x) => x.id === incomeId)!
+      assert.equal(r.status, "RECEIVED")
+      assert.equal(await accountBalance("1200"), "0")
+      await rejects(() => pl.setLedgerConfirmed(admin, "income", incomeId, false, prisma), /Payments are already recorded/)
+    })
+
+    await step("un-confirming a cost posts a reversal and removes it from the P&L", async () => {
+      await pl.setLedgerConfirmed(admin, "cost", costId, false, prisma)
+      assert.equal(await accountBalance("5200"), "0")
+      const reversed = await prisma.journalEntry.count({ where: { status: "REVERSED" } })
+      assert.equal(reversed, 1)
+      await pl.deleteLedgerEntry(admin, "cost", costId, prisma)
+      assert.equal((await pl.getProjectLedger(admin, sep, prisma)).costs.length, 0)
+    })
+
+    await step("the ledger still balances", async () => {
       const [t] = await prisma.$queryRaw<{ d: string; c: string }[]>`SELECT sum(debit)::text d, sum(credit)::text c FROM journal_lines`
       assert.equal(new Decimal(t.d).toString(), new Decimal(t.c).toString())
     })

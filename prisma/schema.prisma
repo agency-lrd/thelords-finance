@@ -747,6 +747,7 @@ model Team {
   kpiTargets         KpiTarget[]
   kpiActuals         KpiActual[]
   payrollItems       PayrollItem[]
+  projectIncome      ProjectIncome[]
 
   @@unique([departmentId, code])
   @@map("teams")
@@ -1313,6 +1314,8 @@ model ProjectIncome {
   dueDate        DateTime?    @map("due_date") @db.Date
   receivedAmount Decimal      @default(0) @map("received_amount") @db.Decimal(24, 8)
   receivedDate   DateTime?    @map("received_date") @db.Date
+  teamId         String?      @map("team_id") @db.Uuid // team credited with the income (e.g. "Team Саша")
+  notes          String?
   journalEntryId String?      @unique @map("journal_entry_id") @db.Uuid
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1320,11 +1323,13 @@ model ProjectIncome {
   project      Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
   period       FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
   category     FinancialCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  team         Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
   journalEntry JournalEntry?     @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
   currencyRef  Currency          @relation("ProjectIncomeCurrency", fields: [currency], references: [code], onDelete: Restrict)
 
   @@index([projectId, periodId])
   @@index([periodId])
+  @@index([teamId])
   @@map("project_income")
 }
 
@@ -1345,6 +1350,7 @@ model ProjectCost {
   baseAmount     Decimal    @map("base_amount") @db.Decimal(24, 8)
   incurredDate   DateTime   @map("incurred_date") @db.Date
   paidDate       DateTime?  @map("paid_date") @db.Date
+  notes          String?
   journalEntryId String?    @unique @map("journal_entry_id") @db.Uuid
   createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)

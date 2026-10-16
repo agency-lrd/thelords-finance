@@ -34,7 +34,7 @@ export async function accountByCode(tx: Tx, organizationId: string, code: string
 export async function postJournal(
   tx: Tx,
   user: SessionUser,
-  input: { periodId: string; entryDate: Date; description: string; source: JournalSource; lines: JournalLineInput[] },
+  input: { periodId: string; entryDate: Date; description: string; source: JournalSource; lines: JournalLineInput[]; reversesEntryId?: string },
 ) {
   if (!user.permissions.has("journal:post")) {
     throw new UserInputError("Posting to the ledger requires the journal:post permission (CFO or Owner).")
@@ -63,6 +63,7 @@ export async function postJournal(
       entryDate: input.entryDate,
       description: input.description,
       source: input.source,
+      reversesEntryId: input.reversesEntryId ?? null,
       createdById: user.id,
       lines: {
         create: lines.map((line, index) => ({
@@ -84,4 +85,33 @@ export async function postJournal(
     where: { id: entry.id },
     data: { status: "POSTED", postedById: user.id, postedAt: new Date() },
   })
+}
+
+/**
+ * Cancels a posted entry the accounting way: posts a mirror entry (debits and credits swapped) in an
+ * open period and marks the original REVERSED. Posted entries themselves are never edited.
+ */
+export async function reverseJournal(tx: Tx, user: SessionUser, entryId: string, input: { periodId: string; entryDate: Date; description: string }) {
+  const original = await tx.journalEntry.findFirst({ where: { id: entryId, organizationId: user.organizationId }, include: { lines: true } })
+  if (!original || original.status !== "POSTED") throw new UserInputError("Only a posted entry can be reversed.")
+  const reversal = await postJournal(tx, user, {
+    periodId: input.periodId,
+    entryDate: input.entryDate,
+    description: input.description,
+    source: "REVERSAL",
+    reversesEntryId: original.id,
+    lines: original.lines.map((l) => ({
+      accountId: l.ledgerAccountId,
+      debit: new Decimal(l.credit),
+      credit: new Decimal(l.debit),
+      description: l.description ?? undefined,
+      departmentId: l.departmentId,
+      employeeId: l.employeeId,
+      projectId: l.projectId,
+      clientId: l.clientId,
+      categoryId: l.categoryId,
+    })),
+  })
+  await tx.journalEntry.update({ where: { id: original.id }, data: { status: "REVERSED" } })
+  return reversal
 }
