@@ -168,6 +168,7 @@ async function main() {
     })
 
     console.log("\nowners and budgets")
+    let ownerIds: string[] = []
     await step("owner distribution: $20,000 at 25/25/50 never touches EBITDA", async () => {
       const ids: string[] = []
       for (const [name, share] of [["Owner A", "0.25"], ["Owner B", "0.25"], ["Owner C", "0.5"]] as const) {
@@ -198,7 +199,7 @@ async function main() {
       await owners.setStake(admin, ids[2], { ownershipShare: new Decimal("0.4"), profitShare: null, validFrom: new Date(Date.UTC(2027, 0, 1)) }, prisma)
       list = await owners.listDistributions(admin, prisma)
       assert.equal(list[0].allocations.find((x) => x.name === "Owner C")!.amount, "10000")
-      await assert.rejects(() => owners.setStake(admin, ids[0], { ownershipShare: new Decimal("0.5"), profitShare: null, validFrom: new Date(Date.UTC(2026, 11, 2)) }, prisma), /exceed/)
+      ownerIds = ids
     })
 
     await step("budgets: totals by range, actual vs budget, scenarios kept apart", async () => {
@@ -218,6 +219,12 @@ async function main() {
       const clerk = { ...admin, permissions: new Set(["journal:create", "ledger:read"] as const) }
       await assert.rejects(() => tx.createTransaction(clerk as typeof admin, { ...base, type: "OWNER_CONTRIBUTION", description: "x", amount: new Decimal(1), date: d(1, 12), shareholderId: owner.id }, { post: true }, prisma), /journal:post/)
       await assert.rejects(() => reports.pnlReport(clerk as typeof admin, oct, {}, prisma), /permission/)
+    })
+
+    // Last on purpose: a database-level rejection inside a transaction. PGlite's socket server can
+    // mishandle the connection after such an error, so nothing runs after it (real Postgres is fine).
+    await step("ownership above 100% is refused by the database", async () => {
+      await assert.rejects(() => owners.setStake(admin, ownerIds[0], { ownershipShare: new Decimal("0.5"), profitShare: null, validFrom: new Date(Date.UTC(2026, 11, 2)) }, prisma), /exceed/)
     })
   } finally {
     await stop()

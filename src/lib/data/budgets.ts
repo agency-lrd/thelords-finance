@@ -60,11 +60,13 @@ export async function setBudgetLine(
     if (input.amount === null) {
       await tx.budgetLine.deleteMany({ where: { organizationId: user.organizationId, year: input.year, month: input.month, scenario: input.scenario, scopeKey: key } })
     } else {
-      await tx.budgetLine.upsert({
-        where,
-        create: { organizationId: user.organizationId, year: input.year, month: input.month, scenario: input.scenario, metric: input.metric, ledgerAccountId: input.ledgerAccountId, departmentId: input.departmentId, projectId: input.projectId, scopeKey: key, amount: input.amount.toString() },
-        update: { amount: input.amount.toString() },
-      })
+      // Explicit lookup + update/create (instead of upsert): one statement at a time in the transaction.
+      const existing = await tx.budgetLine.findUnique({ where })
+      if (existing) await tx.budgetLine.update({ where: { id: existing.id }, data: { amount: input.amount.toString() } })
+      else
+        await tx.budgetLine.create({
+          data: { organizationId: user.organizationId, year: input.year, month: input.month, scenario: input.scenario, metric: input.metric, ledgerAccountId: input.ledgerAccountId, departmentId: input.departmentId, projectId: input.projectId, scopeKey: key, amount: input.amount.toString() },
+        })
     }
     await audit(tx, user, "budget.set", "budget_line", null, { ...input, amount: input.amount?.toString() ?? null })
   })
