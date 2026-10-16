@@ -23,6 +23,8 @@ export type SessionUser = {
 type SessionResult =
   | { state: "signed-out" }
   | { state: "no-access"; email: string }
+  /** Signed in, but the server is not fully configured (names of what is missing, never values). */
+  | { state: "setup"; missing: string[] }
   | { state: "ok"; user: SessionUser }
 
 /**
@@ -38,9 +40,23 @@ export const getSession = cache(async (): Promise<SessionResult> => {
   if (error || !data.user) return { state: "signed-out" }
 
   const email = data.user.email ?? ""
-  let appUser = await prisma.appUser.findUnique({ where: { id: data.user.id } })
-  if (!appUser && data.user.email_confirmed_at && isBootstrapEmail(email)) {
-    appUser = await bootstrapSuperAdmin(data.user.id, email)
+  if (!process.env.DATABASE_URL) return { state: "setup", missing: ["DATABASE_URL"] }
+  try {
+    return await loadAccess(data.user.id, email, !!data.user.email_confirmed_at)
+  } catch (error) {
+    console.error("Session: could not load access from the database", error instanceof Error ? error.message : error)
+    return { state: "setup", missing: ["database connection"] }
+  }
+})
+
+async function loadAccess(userId: string, email: string, emailConfirmed: boolean): Promise<SessionResult> {
+  let appUser = await prisma.appUser.findUnique({ where: { id: userId } })
+  if (!appUser && emailConfirmed && isBootstrapEmail(email)) {
+    appUser = await bootstrapSuperAdmin(userId, email)
+  }
+  if (!appUser && !process.env.SUPER_ADMIN_EMAIL?.trim() && (await onboardingOpen())) {
+    // Nobody can be granted access until the first Super Admin email is configured.
+    return { state: "setup", missing: ["SUPER_ADMIN_EMAIL"] }
   }
   if (!appUser || appUser.status !== "ACTIVE") return { state: "no-access", email }
 
@@ -75,7 +91,7 @@ export const getSession = cache(async (): Promise<SessionResult> => {
       permissions,
     },
   }
-})
+}
 
 /** The configured first-owner email (SUPER_ADMIN_EMAIL), compared case-insensitively. */
 export function isBootstrapEmail(email: string) {
@@ -113,6 +129,7 @@ export async function requireUser(): Promise<SessionUser> {
   const session = await getSession()
   if (session.state === "signed-out") redirect("/login")
   if (session.state === "no-access") redirect("/no-access")
+  if (session.state === "setup") redirect(`/no-access?reason=setup&missing=${encodeURIComponent(session.missing.join(","))}`)
   return session.user
 }
 
