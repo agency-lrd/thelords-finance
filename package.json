@@ -13,7 +13,8 @@
     "db:check": "tsx scripts/db-check.ts",
     "db:prisma": "tsx scripts/prisma-tls.ts",
     "db:check:migrate": "echo 'SELECT 1;' | tsx scripts/prisma-tls.ts db execute --stdin",
-    "db:test": "tsx scripts/db-test.ts"
+    "db:test": "tsx scripts/db-test.ts",
+    "db:inspect": "tsx scripts/db-inspect.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
