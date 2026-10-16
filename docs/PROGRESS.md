@@ -15,7 +15,7 @@ Last updated: 2026-10-17
 | **Phase C**: monthly analytics, executive dashboard, department profitability | Done |
 | **Phase D**: owners and distributions, budgets and forecasts | Done |
 | **Phase E**: AI CFO preparation (tools, anomalies, disabled state) | Done. Chat is not built yet |
-| Password vault "Пароли": access register (metadata only) | Done. Storing passwords waits for an approved option in `docs/SECURITY-VAULT.md` |
+| Password vault "Пароли": access register (metadata only) | Done. Decision: passwords stay in Bitwarden/1Password (Option A in `docs/SECURITY-VAULT.md`); Finance OS never stores them |
 
 ## How the numbers fit together
 

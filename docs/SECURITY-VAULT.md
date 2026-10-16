@@ -1,7 +1,9 @@
 # Password vault: security architecture (for approval)
 
-Status: **metadata only is implemented.** No passwords, recovery codes, API keys or other secrets are
-stored in THE LORDS Finance OS. Decide on one of the options below before any secret is stored.
+Status: **Decision (2026-10-18, approved by the owner): Option A.** Passwords and other secrets stay in
+Bitwarden or 1Password; THE LORDS Finance OS is only the access register. No passwords, recovery codes,
+API keys or other secrets are ever stored in Finance OS. Options B and C below are kept for reference only
+and must not be built without a new approval.
 
 ## Current authorization architecture
 
@@ -104,7 +106,14 @@ Only if A and B are impossible. Minimum design:
 Crypto wallet seed phrases and private keys. These belong only in hardware wallets or the custody solution,
 never in a CRM or a shared password manager collection.
 
-## Recommendation
+## Decision
 
-Adopt **Option A** now and keep Finance OS as the access register. Revisit Option B only for specific
-workflows that need in-app reveal, after MFA is enrolled for every user who has vault access.
+**Option A is approved** (2026-10-18). Next steps for the team, outside this app:
+
+1. Choose Bitwarden Teams/Enterprise or 1Password Business. Create collections (Bitwarden) or vaults
+   (1Password) per department, and enforce MFA for every member.
+2. Move existing passwords there. Delete them from spreadsheets, chats and notes.
+3. In Finance OS → Пароли, add one entry per service with the link to its item in the password manager,
+   the responsible employee, and the people who should have access.
+
+Option B would need a separate approval, with MFA enrolled first for everyone who has vault access.
