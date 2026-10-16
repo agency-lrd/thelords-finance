@@ -126,7 +126,13 @@ async function main() {
   await equals("CFO cannot approve distributions", `SELECT count(*)::int v FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'CFO' AND rp.permission_key = 'distribution:approve'`, 0)
   await equals("HR cannot approve salaries", `SELECT count(*)::int v FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'HR' AND rp.permission_key = 'salary:approve'`, 0)
   await equals("Finance Manager cannot approve payroll", `SELECT count(*)::int v FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'FINANCE_MANAGER' AND rp.permission_key = 'payroll:approve'`, 0)
-  await equals("no employees or financial records seeded", `SELECT ((SELECT count(*) FROM employees) + (SELECT count(*) FROM journal_entries) + (SELECT count(*) FROM salary_conditions) + (SELECT count(*) FROM clients))::int v`, 0)
+  await equals("9 default departments", `SELECT count(*)::int v FROM departments`, 9)
+  await equals("chart of accounts: 34 accounts, 1 header", `SELECT json_build_array(count(*), count(*) FILTER (WHERE NOT is_postable))::text v FROM ledger_accounts`, "[34, 1]")
+  await equals("every category posts to an account", `SELECT count(*)::int v FROM financial_categories WHERE ledger_account_id IS NULL`, 0)
+  await equals("Profit KPI in base currency", `SELECT (unit || ':' || currency) v FROM kpi_definitions WHERE code = 'PROFIT'`, "CURRENCY:USD")
+  await ok("default configuration is idempotent", `SELECT "finance_private"."create_default_configuration"(id) FROM organizations`)
+  await equals("re-running adds nothing", `SELECT ((SELECT count(*) FROM departments) + (SELECT count(*) FROM ledger_accounts))::int v`, 43)
+  await equals("no employees or financial records seeded",`SELECT ((SELECT count(*) FROM employees) + (SELECT count(*) FROM journal_entries) + (SELECT count(*) FROM salary_conditions) + (SELECT count(*) FROM clients))::int v`, 0)
 
   // ── Fixtures: a separate test organization ──
   await db.exec(`

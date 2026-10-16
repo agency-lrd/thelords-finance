@@ -110,10 +110,9 @@ export async function setProjectStatus(user: SessionUser, id: string, status: Pr
 }
 
 async function checkProjectAndCategory(db: Db, user: SessionUser, projectId: string, categoryId: string, kinds: string[]) {
-  const [project, category] = await Promise.all([
-    db.project.findFirst({ where: { id: projectId, organizationId: user.organizationId } }),
-    db.financialCategory.findFirst({ where: { id: categoryId, organizationId: user.organizationId, archivedAt: null } }),
-  ])
+  // Sequential: db is usually a transaction, which runs one query at a time.
+  const project = await db.project.findFirst({ where: { id: projectId, organizationId: user.organizationId } })
+  const category = await db.financialCategory.findFirst({ where: { id: categoryId, organizationId: user.organizationId, archivedAt: null } })
   if (!project) throw new UserInputError("Project not found.")
   if (!category || !kinds.includes(category.kind)) throw new UserInputError("Choose a valid category.")
   return project

@@ -117,6 +117,16 @@ enum CalculationMethod {
   @@map("calculation_method")
 }
 
+/// What a compensation rule's metric is measured against: the whole KPI actual, only the part above
+/// the employee's KPI target, or the whole actual but only when the target is met.
+enum MetricBasis {
+  TOTAL
+  ABOVE_TARGET
+  TOTAL_IF_TARGET_MET
+
+  @@map("metric_basis")
+}
+
 enum KpiUnit {
   COUNT
   CURRENCY
@@ -516,6 +526,7 @@ model AppUser {
   adjustmentsRequested  PayrollAdjustment[]  @relation("AdjustmentRequestedBy")
   adjustmentsApproved   PayrollAdjustment[]  @relation("AdjustmentApprovedBy")
   payrollApprovals      PayrollApproval[]
+  payrollItemsConfirmed PayrollItem[]        @relation("PayrollItemConfirmedBy")
   journalEntriesCreated JournalEntry[]       @relation("JournalCreatedBy")
   journalEntriesPosted  JournalEntry[]       @relation("JournalPostedBy")
   distributionApprovals Distribution[]
@@ -756,6 +767,9 @@ model Employee {
   status          EmployeeStatus @default(ONBOARDING)
   hireDate        DateTime       @map("hire_date") @db.Date
   terminationDate DateTime?      @map("termination_date") @db.Date
+  isTeamLead      Boolean        @default(false) @map("is_team_lead")
+  notes           String?
+  archivedAt      DateTime?      @map("archived_at") @db.Timestamptz(6) // hidden from the sheet and lists; history kept
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -869,6 +883,7 @@ model CompensationRule {
   description     String?
   type            CompensationType
   method          CalculationMethod
+  metricBasis     MetricBasis       @default(TOTAL) @map("metric_basis")
   fixedAmount     Decimal?          @map("fixed_amount") @db.Decimal(24, 8)
   rate            Decimal?          @db.Decimal(12, 8)
   currency        String?           @db.VarChar(10)
@@ -1051,30 +1066,33 @@ model PayrollRun {
 /// One employee's payslip in a run. Department/team/salary are snapshotted so later
 /// re-organizations and raises never change historical payroll.
 model PayrollItem {
-  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  payrollRunId       String   @map("payroll_run_id") @db.Uuid
-  employeeId         String   @map("employee_id") @db.Uuid
-  salaryConditionId  String?  @map("salary_condition_id") @db.Uuid
-  departmentId       String?  @map("department_id") @db.Uuid
-  teamId             String?  @map("team_id") @db.Uuid
-  currency           String   @db.VarChar(10)
-  fxRateToBase       Decimal  @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
-  grossAmount        Decimal  @default(0) @map("gross_amount") @db.Decimal(24, 8)
-  deductionsAmount   Decimal  @default(0) @map("deductions_amount") @db.Decimal(24, 8)
-  netAmount          Decimal  @default(0) @map("net_amount") @db.Decimal(24, 8)
-  employerCostAmount Decimal  @default(0) @map("employer_cost_amount") @db.Decimal(24, 8) // gross + employer contributions
-  baseNetAmount      Decimal  @default(0) @map("base_net_amount") @db.Decimal(24, 8) // net in organization base currency
-  workedDays         Decimal? @map("worked_days") @db.Decimal(6, 2)
-  workedHours        Decimal? @map("worked_hours") @db.Decimal(8, 2)
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payrollRunId       String    @map("payroll_run_id") @db.Uuid
+  employeeId         String    @map("employee_id") @db.Uuid
+  salaryConditionId  String?   @map("salary_condition_id") @db.Uuid
+  departmentId       String?   @map("department_id") @db.Uuid
+  teamId             String?   @map("team_id") @db.Uuid
+  currency           String    @db.VarChar(10)
+  fxRateToBase       Decimal   @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
+  grossAmount        Decimal   @default(0) @map("gross_amount") @db.Decimal(24, 8)
+  deductionsAmount   Decimal   @default(0) @map("deductions_amount") @db.Decimal(24, 8)
+  netAmount          Decimal   @default(0) @map("net_amount") @db.Decimal(24, 8)
+  employerCostAmount Decimal   @default(0) @map("employer_cost_amount") @db.Decimal(24, 8) // gross + employer contributions
+  baseNetAmount      Decimal   @default(0) @map("base_net_amount") @db.Decimal(24, 8) // net in organization base currency
+  workedDays         Decimal?  @map("worked_days") @db.Decimal(6, 2)
+  workedHours        Decimal?  @map("worked_hours") @db.Decimal(8, 2)
   notes              String?
-  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  confirmedAt        DateTime? @map("confirmed_at") @db.Timestamptz(6) // row confirmed on the financial sheet
+  confirmedById      String?   @map("confirmed_by_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   payrollRun      PayrollRun        @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
   employee        Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   salaryCondition SalaryCondition?  @relation(fields: [salaryConditionId], references: [id], onDelete: Restrict)
   department      Department?       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   team            Team?             @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  confirmedBy     AppUser?          @relation("PayrollItemConfirmedBy", fields: [confirmedById], references: [id], onDelete: Restrict)
   lines           PayrollItemLine[]
   payments        PayrollPayment[]
   projectCosts    ProjectCost[]

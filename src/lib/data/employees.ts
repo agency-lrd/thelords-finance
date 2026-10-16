@@ -146,10 +146,8 @@ export async function addSalaryChange(
 /** Moves an employee to another department from a date; the previous assignment is kept as history. */
 export async function changeDepartment(user: SessionUser, employeeId: string, departmentId: string, validFrom: Date, db: Db = prisma) {
   return inTx(db, async (tx) => {
-    const [employee, department] = await Promise.all([
-      tx.employee.findFirst({ where: { id: employeeId, organizationId: user.organizationId } }),
-      tx.department.findFirst({ where: { id: departmentId, organizationId: user.organizationId, archivedAt: null } }),
-    ])
+    const employee = await tx.employee.findFirst({ where: { id: employeeId, organizationId: user.organizationId } })
+    const department = await tx.department.findFirst({ where: { id: departmentId, organizationId: user.organizationId, archivedAt: null } })
     if (!employee || !department) throw new UserInputError("Employee or department not found.")
 
     const current = await tx.employeeAssignment.findFirst({ where: { employeeId, isPrimary: true }, orderBy: { validFrom: "desc" } })
