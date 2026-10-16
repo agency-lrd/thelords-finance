@@ -42,7 +42,7 @@ async function Employees() {
       <PageHeader title={TITLE} description={DESCRIPTION} />
 
       {employees.length === 0 ? (
-        <EmptyState icon={Users} title="No employees yet" description="Add the first team member below. Departments are managed in Settings." />
+        <EmptyState icon={Users} title="No employees yet" description="Add the first team member below. Departments are managed under Departments." />
       ) : (
         <Table>
           <THead>
@@ -95,7 +95,7 @@ async function Employees() {
           <Panel>
             {departments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                Create a department first in <Link href="/settings" className="text-primary hover:underline">Settings</Link>.
+                Create a department first in <Link href="/departments" className="text-primary hover:underline">Departments</Link>.
               </p>
             ) : (
               <ActionForm action={createEmployeeAction} submitLabel="Add employee">

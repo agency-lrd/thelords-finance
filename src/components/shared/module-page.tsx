@@ -1,19 +1,28 @@
-import { getNavItem } from "@/config/navigation"
+import { Suspense } from "react"
+
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
+import { getNavItem } from "@/config/navigation"
+import { requireUser } from "@/lib/auth/session"
+import { getDictionary } from "@/lib/i18n/server"
 
-/** Placeholder layout for modules whose data layer is not wired up yet. */
+/** Placeholder for modules scheduled for later phases. Still requires sign-in. */
 export function ModulePage({ href }: { href: string }) {
-  const item = getNavItem(href)
+  return (
+    <Suspense>
+      <Placeholder href={href} />
+    </Suspense>
+  )
+}
 
+async function Placeholder({ href }: { href: string }) {
+  await requireUser()
+  const { t } = await getDictionary()
+  const item = getNavItem(href)
   return (
     <div className="flex flex-col gap-8">
-      <PageHeader title={item.title} description={item.description} />
-      <EmptyState
-        icon={item.icon}
-        title={`No ${item.title} data yet`}
-        description="This module will populate once a data source is connected. Nothing is shown until real records exist."
-      />
+      <PageHeader title={t.nav[item.key]} description={t.module.soonText} />
+      <EmptyState icon={item.icon} title={t.module.soon} description={t.module.soonText} />
     </div>
   )
 }

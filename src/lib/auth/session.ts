@@ -38,7 +38,10 @@ export const getSession = cache(async (): Promise<SessionResult> => {
   if (error || !data.user) return { state: "signed-out" }
 
   const email = data.user.email ?? ""
-  const appUser = await prisma.appUser.findUnique({ where: { id: data.user.id } })
+  let appUser = await prisma.appUser.findUnique({ where: { id: data.user.id } })
+  if (!appUser && data.user.email_confirmed_at && isBootstrapEmail(email)) {
+    appUser = await bootstrapSuperAdmin(data.user.id, email)
+  }
   if (!appUser || appUser.status !== "ACTIVE") return { state: "no-access", email }
 
   const now = new Date()
@@ -73,6 +76,37 @@ export const getSession = cache(async (): Promise<SessionResult> => {
     },
   }
 })
+
+/** The configured first-owner email (SUPER_ADMIN_EMAIL), compared case-insensitively. */
+export function isBootstrapEmail(email: string) {
+  const allowed = process.env.SUPER_ADMIN_EMAIL?.trim().toLowerCase()
+  return !!allowed && email.trim().toLowerCase() === allowed
+}
+
+/** True while no active Super Admin exists (first-time onboarding is open). */
+export async function onboardingOpen() {
+  return (await prisma.appUser.count({ where: { isSuperAdmin: true, status: "ACTIVE" } })) === 0
+}
+
+/**
+ * First-time onboarding: the confirmed SUPER_ADMIN_EMAIL account becomes Super Admin with the Owner
+ * role, but only while no Super Admin exists. Serialized with an advisory lock; audited.
+ */
+async function bootstrapSuperAdmin(userId: string, email: string) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('bootstrap_super_admin', 0))`
+    if ((await tx.appUser.count({ where: { isSuperAdmin: true, status: "ACTIVE" } })) > 0) return null
+    const organization = await tx.organization.findFirst({ orderBy: { createdAt: "asc" } })
+    if (!organization) return null
+    const owner = await tx.role.findUnique({ where: { organizationId_key: { organizationId: organization.id, key: "OWNER" } } })
+    const user = await tx.appUser.create({ data: { id: userId, email: email.toLowerCase(), status: "ACTIVE", isSuperAdmin: true, lastLoginAt: new Date() } })
+    if (owner) await tx.userRoleAssignment.create({ data: { organizationId: organization.id, userId, roleId: owner.id } })
+    await tx.auditLog.create({
+      data: { organizationId: organization.id, actorType: "SYSTEM", action: "access.bootstrap_super_admin", entityType: "app_user", entityId: userId, after: { email: email.toLowerCase(), ownerRole: !!owner } },
+    })
+    return user
+  })
+}
 
 /** For pages: redirects to /login or /no-access instead of rendering without access. */
 export async function requireUser(): Promise<SessionUser> {

@@ -23,8 +23,22 @@ function createPrismaClient() {
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient()
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma
+function client() {
+  globalForPrisma.prisma ??= createPrismaClient()
+  return globalForPrisma.prisma
 }
+
+/**
+ * Created on first use, not at import: builds and public pages (login) work without database
+ * credentials, and a missing DATABASE_URL fails only the request that needs the database.
+ */
+export const prisma = new Proxy({} as PrismaClient, {
+  get(_target, property) {
+    const instance = client()
+    const value = Reflect.get(instance, property, instance)
+    return typeof value === "function" ? value.bind(instance) : value
+  },
+  has(_target, property) {
+    return Reflect.has(client(), property)
+  },
+})
