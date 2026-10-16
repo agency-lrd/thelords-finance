@@ -497,6 +497,31 @@ enum BudgetScenario {
   @@map("budget_scenario")
 }
 
+/// Sensitivity of a credential. CRITICAL: financial platforms, recovery codes, API keys.
+enum VaultAccessLevel {
+  STANDARD
+  SENSITIVE
+  CRITICAL
+
+  @@map("vault_access_level")
+}
+
+/// External password manager that holds the actual secret.
+enum VaultProvider {
+  BITWARDEN
+  ONEPASSWORD
+  OTHER
+
+  @@map("vault_provider")
+}
+
+enum VaultGrantLevel {
+  VIEW
+  EDIT
+
+  @@map("vault_grant_level")
+}
+
 enum AuditActorType {
   USER
   SYSTEM
@@ -545,9 +570,11 @@ model Organization {
   distributions      Distribution[]
   auditLogs          AuditLog[]
 
-  baseCurrencyRef Currency      @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
-  transactions    Transaction[]
-  budgetLines     BudgetLine[]
+  baseCurrencyRef  Currency          @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
+  transactions     Transaction[]
+  budgetLines      BudgetLine[]
+  vaultCategories  VaultCategory[]
+  vaultCredentials VaultCredential[]
 
   @@map("organizations")
 }
@@ -565,21 +592,25 @@ model AppUser {
 
   employee              Employee?
   shareholder           Shareholder?
-  roleAssignments       UserRoleAssignment[] @relation("AssignedUser")
-  grantedAssignments    UserRoleAssignment[] @relation("GrantedBy")
+  roleAssignments       UserRoleAssignment[]   @relation("AssignedUser")
+  grantedAssignments    UserRoleAssignment[]   @relation("GrantedBy")
   closedPeriods         FinancialPeriod[]
   salaryApprovals       SalaryCondition[]
-  adjustmentsRequested  PayrollAdjustment[]  @relation("AdjustmentRequestedBy")
-  adjustmentsApproved   PayrollAdjustment[]  @relation("AdjustmentApprovedBy")
+  adjustmentsRequested  PayrollAdjustment[]    @relation("AdjustmentRequestedBy")
+  adjustmentsApproved   PayrollAdjustment[]    @relation("AdjustmentApprovedBy")
   payrollApprovals      PayrollApproval[]
-  payrollItemsConfirmed PayrollItem[]        @relation("PayrollItemConfirmedBy")
-  journalEntriesCreated JournalEntry[]       @relation("JournalCreatedBy")
-  journalEntriesPosted  JournalEntry[]       @relation("JournalPostedBy")
+  payrollItemsConfirmed PayrollItem[]          @relation("PayrollItemConfirmedBy")
+  journalEntriesCreated JournalEntry[]         @relation("JournalCreatedBy")
+  journalEntriesPosted  JournalEntry[]         @relation("JournalPostedBy")
   distributionApprovals Distribution[]
   kpiActualsRecorded    KpiActual[]
   auditLogs             AuditLog[]
-  transactionsCreated   Transaction[]        @relation("TransactionCreatedBy")
-  transactionsPosted    Transaction[]        @relation("TransactionPostedBy")
+  transactionsCreated   Transaction[]          @relation("TransactionCreatedBy")
+  transactionsPosted    Transaction[]          @relation("TransactionPostedBy")
+  vaultCreated          VaultCredential[]      @relation("VaultCredentialCreatedBy")
+  vaultUpdated          VaultCredential[]      @relation("VaultCredentialUpdatedBy")
+  vaultGrants           VaultCredentialGrant[] @relation("VaultGrantUser")
+  vaultGrantsGiven      VaultCredentialGrant[] @relation("VaultGrantGrantedBy")
 
   @@map("app_users")
 }
@@ -775,6 +806,7 @@ model Department {
   journalLines       JournalLine[]
   transactions       Transaction[]
   budgetLines        BudgetLine[]
+  vaultCredentials   VaultCredential[]
 
   @@unique([organizationId, code])
   @@index([parentId])
@@ -843,6 +875,7 @@ model Employee {
   projectCosts       ProjectCost[]
   journalLines       JournalLine[]
   shareholder        Shareholder?
+  vaultCredentials   VaultCredential[]
 
   @@unique([organizationId, employeeNumber])
   @@unique([organizationId, workEmail])
@@ -1792,6 +1825,79 @@ model BudgetLine {
   @@unique([organizationId, year, month, scenario, scopeKey])
   @@index([organizationId, year])
   @@map("budget_lines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Password vault register (metadata only; secrets live in an external password manager)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model VaultCategory {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  sortOrder      Int       @default(0) @map("sort_order")
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  credentials  VaultCredential[]
+
+  @@unique([organizationId, code])
+  @@map("vault_categories")
+}
+
+/// A credential in the access register. There is deliberately no password column: the secret is kept
+/// in the external password manager referenced by vaultProvider/vaultItemRef.
+model VaultCredential {
+  id                    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId        String           @map("organization_id") @db.Uuid
+  name                  String
+  loginUrl              String?          @map("login_url")
+  username              String?
+  departmentId          String?          @map("department_id") @db.Uuid
+  categoryId            String?          @map("category_id") @db.Uuid
+  responsibleEmployeeId String?          @map("responsible_employee_id") @db.Uuid
+  accessLevel           VaultAccessLevel @default(STANDARD) @map("access_level")
+  vaultProvider         VaultProvider?   @map("vault_provider")
+  vaultItemRef          String?          @map("vault_item_ref") // item link or id in the password manager (not a secret)
+  notes                 String?
+  archivedAt            DateTime?        @map("archived_at") @db.Timestamptz(6)
+  createdById           String?          @map("created_by_id") @db.Uuid
+  updatedById           String?          @map("updated_by_id") @db.Uuid
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  department   Department?            @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  category     VaultCategory?         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  responsible  Employee?              @relation(fields: [responsibleEmployeeId], references: [id], onDelete: Restrict)
+  createdBy    AppUser?               @relation("VaultCredentialCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedBy    AppUser?               @relation("VaultCredentialUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
+  grants       VaultCredentialGrant[]
+
+  @@index([organizationId, departmentId])
+  @@map("vault_credentials")
+}
+
+/// Explicit, per-credential access for one user. Revoked grants are kept (revokedAt) as history.
+model VaultCredentialGrant {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  credentialId String          @map("credential_id") @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
+  level        VaultGrantLevel @default(VIEW)
+  grantedById  String?         @map("granted_by_id") @db.Uuid
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  revokedAt    DateTime?       @map("revoked_at") @db.Timestamptz(6)
+
+  credential VaultCredential @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+  user       AppUser         @relation("VaultGrantUser", fields: [userId], references: [id], onDelete: Restrict)
+  grantedBy  AppUser?        @relation("VaultGrantGrantedBy", fields: [grantedById], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([credentialId])
+  @@map("vault_credential_grants")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

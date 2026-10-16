@@ -37,6 +37,7 @@ const ru = {
     budgets: "Бюджеты",
     owners: "Собственники",
     categories: "Категории",
+    vault: "Пароли",
   },
   greeting: { morning: "Доброе утро", day: "Добрый день", evening: "Добрый вечер", night: "Доброй ночи" },
   dashboard: {
@@ -306,6 +307,7 @@ const en: DeepString<Dictionary> = {
     budgets: "Budgets",
     owners: "Owners",
     categories: "Categories",
+    vault: "Password Vault",
   },
   greeting: { morning: "Good morning", day: "Good afternoon", evening: "Good evening", night: "Good night" },
   dashboard: {

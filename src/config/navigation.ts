@@ -4,6 +4,7 @@ import {
   Building2,
   ChartColumn,
   FileSpreadsheet,
+  KeyRound,
   Landmark,
   LayoutDashboard,
   Receipt,
@@ -42,6 +43,7 @@ export const navItems: NavItem[] = [
   { key: "departments", href: "/departments", icon: Building2 },
   { key: "accounts", href: "/accounts", icon: Landmark },
   { key: "categories", href: "/categories", icon: Tags },
+  { key: "vault", href: "/vault", icon: KeyRound },
   { key: "aiCfo", href: "/ai-cfo", icon: Sparkles },
 ]
 

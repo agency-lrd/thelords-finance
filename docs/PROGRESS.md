@@ -15,6 +15,7 @@ Last updated: 2026-10-17
 | **Phase C**: monthly analytics, executive dashboard, department profitability | Done |
 | **Phase D**: owners and distributions, budgets and forecasts | Done |
 | **Phase E**: AI CFO preparation (tools, anomalies, disabled state) | Done. Chat is not built yet |
+| Password vault "Пароли": access register (metadata only) | Done. Storing passwords waits for an approved option in `docs/SECURITY-VAULT.md` |
 
 ## How the numbers fit together
 
@@ -52,6 +53,7 @@ Last updated: 2026-10-17
 | `/owners` | Owners with effective-dated ownership and profit shares; capital, allocated, paid and outstanding amounts; distributions from an explicitly entered distributable amount, with a payout % (the rest is reinvested); approval and per-owner payment |
 | `/categories` | Income and expense categories, subcategories, and the P&L line each one maps to; new P&L lines; archive |
 | `/accounts`, `/departments`, `/employees` | Unchanged from earlier sessions |
+| `/vault` Пароли | Credential access register: service, login URL, username, department, category, responsible employee, access level, notes, link to the item in Bitwarden/1Password. Sharing is explicit per entry (Owner and Super Admin see everything; department membership grants nothing). History of views, copies, changes and shares; refuses text that looks like a secret; browser-only password generator. **No passwords are stored**; see `docs/SECURITY-VAULT.md` |
 | `/ai-cfo` | Disabled state (no provider key); deterministic month summary and anomalies; list of the tools the AI could use for your role |
 
 ## Database

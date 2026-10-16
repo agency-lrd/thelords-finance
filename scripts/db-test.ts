@@ -331,6 +331,16 @@ async function main() {
   }
   report(authLeaks.length === 0, `authenticated denied on all ${tables.length} tables (even super admin)`, authLeaks.join("; "))
 
+  console.log("\npassword vault register")
+  await rejects("no password column exists", `SELECT password FROM vault_credentials`, /column "password" does not exist/)
+  await ok("two credentials in D1, one shared with employee A", `INSERT INTO vault_credentials (id, organization_id, name, department_id, updated_at) VALUES ('${id(0x201)}', '${ORG}', 'Ads cabinet', '${D1}', now()), ('${id(0x202)}', '${ORG}', 'Bank portal', '${D1}', now());
+    INSERT INTO vault_credential_grants (credential_id, user_id, level) VALUES ('${id(0x201)}', '${U.employeeA}', 'VIEW')`)
+  await rejects("second active grant for the same user", `INSERT INTO vault_credential_grants (credential_id, user_id) VALUES ('${id(0x201)}', '${U.employeeA}')`, /duplicate key/)
+  await rejects("grants cannot be deleted", `DELETE FROM vault_credential_grants`, /append-only/)
+  await rejects("login URL must be http(s)", `INSERT INTO vault_credentials (organization_id, name, login_url, updated_at) VALUES ('${ORG}', 'x', 'javascript:alert(1)', now())`, /url_chk/)
+  await equals("10 initial vault categories", `SELECT count(*)::int v FROM vault_categories`, 10)
+  await equals("only Owner holds vault permissions", `SELECT string_agg(DISTINCT r.key, ',') v FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE rp.permission_key LIKE 'vault:%'`, "OWNER")
+
   console.log("\nRLS policies once SELECT is granted to authenticated (simulated, rolled back per query)")
   await db.exec("GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated")
   const matrix: [string, string, Record<keyof typeof U, number>][] = [
@@ -346,6 +356,9 @@ async function main() {
     ["audit_logs", "audit log", { superAdmin: 1, owner: 1, cfo: 1, financeManager: 0, deptHead: 0, hr: 0, employeeA: 0, readOnly: 0, outsider: 0, suspendedCfo: 0 }],
     ["organizations", "companies", { superAdmin: 3, owner: 1, cfo: 1, financeManager: 1, deptHead: 1, hr: 1, employeeA: 1, readOnly: 1, outsider: 0, suspendedCfo: 0 }],
     ["kpi_targets", "KPIs", { superAdmin: 1, owner: 1, cfo: 1, financeManager: 1, deptHead: 1, hr: 1, employeeA: 1, readOnly: 1, outsider: 0, suspendedCfo: 0 }],
+    // Department membership never grants vault access: the D1 head sees nothing; employee A only the shared entry.
+    ["vault_credentials", "vault entries", { superAdmin: 2, owner: 2, cfo: 0, financeManager: 0, deptHead: 0, hr: 0, employeeA: 1, readOnly: 0, outsider: 0, suspendedCfo: 0 }],
+    ["vault_credential_grants", "vault grants", { superAdmin: 1, owner: 1, cfo: 0, financeManager: 0, deptHead: 0, hr: 0, employeeA: 1, readOnly: 0, outsider: 0, suspendedCfo: 0 }],
   ]
   for (const [table, label, expected] of matrix) {
     const mismatches: string[] = []

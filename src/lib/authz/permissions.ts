@@ -46,6 +46,8 @@ export const PERMISSIONS = [
   "distribution:read",
   "distribution:manage",
   "distribution:approve",
+  "vault:manage",
+  "vault:audit",
 ] as const
 
 export type Permission = (typeof PERMISSIONS)[number]
