@@ -1,6 +1,23 @@
 // Prisma schema for THE LORDS Finance OS.
 // Connection URLs live in prisma.config.ts (CLI) and src/lib/db.ts (runtime adapter).
-// No models yet: the schema will be added after review.
+//
+// Conventions
+// - Money: Decimal(24, 8) (covers fiat, USDT's 6 decimals and 8-decimal crypto). Rates/shares as
+//   fractions (0.25 = 25%): Decimal(12, 8). FX rates: Decimal(28, 12).
+// - Currency: code referencing the Currency table (USD, EUR, GBP, USDT, ...). Each organization has a
+//   base (reporting) currency; foreign amounts carry fxRate and baseAmount so historical reports
+//   never depend on today's rates. Amounts are rounded to Currency.decimals by the application.
+// - Access: all tables have row level security. Policies (read-only, permission-based) live in
+//   prisma/migrations/*_authorization; writes go through the server, which checks permissions.
+// - History: monthly data is keyed by FinancialPeriod; salary, assignments, rules and ownership are
+//   effective-dated (validFrom inclusive, validTo exclusive, null = open-ended). Payroll items snapshot
+//   the conditions they were calculated from. Closed periods are locked by database triggers.
+// - The general ledger (JournalEntry/JournalLine) is the single source of truth for P&L, Balance Sheet
+//   and Cash Flow. Operational records (payroll, project income/costs, distributions) link to the
+//   journal entry that posted them.
+// - Integrity rules Prisma cannot express (CHECKs, period locks, double-entry balance, append-only
+//   audit log, row level security) live in prisma/migrations/*_integrity_rules/migration.sql.
+// - Table/column names are snake_case via @map/@@map.
 
 generator client {
   provider     = "prisma-client"
@@ -10,4 +27,1616 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CurrencyKind {
+  FIAT
+  STABLECOIN
+  CRYPTO
+
+  @@map("currency_kind")
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+
+  @@map("user_status")
+}
+
+enum PeriodStatus {
+  OPEN
+  CLOSING // books being finalized; only users with period:close may post
+  CLOSED // no changes; can be reopened by period:reopen
+  LOCKED // permanently locked (e.g. after audit/tax filing)
+
+  @@map("period_status")
+}
+
+enum EmployeeStatus {
+  ONBOARDING
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+
+  @@map("employee_status")
+}
+
+enum AgreementType {
+  EMPLOYMENT_FULL_TIME
+  EMPLOYMENT_PART_TIME
+  CONTRACTOR
+  FREELANCE
+  INTERNSHIP
+
+  @@map("agreement_type")
+}
+
+enum AgreementStatus {
+  DRAFT
+  ACTIVE
+  ENDED
+  TERMINATED
+
+  @@map("agreement_status")
+}
+
+enum PayBasis {
+  MONTHLY
+  HOURLY
+  DAILY
+  FIXED_FEE
+
+  @@map("pay_basis")
+}
+
+enum CompensationType {
+  KPI_BONUS
+  COMMISSION
+  FIXED_BONUS
+  ALLOWANCE
+  OVERTIME
+  DEDUCTION
+
+  @@map("compensation_type")
+}
+
+enum CalculationMethod {
+  FIXED_AMOUNT
+  PERCENT_OF_BASE
+  PERCENT_OF_METRIC // e.g. % of project revenue or KPI value
+  TIERED
+  PER_UNIT
+
+  @@map("calculation_method")
+}
+
+enum KpiUnit {
+  COUNT
+  CURRENCY
+  PERCENT
+  RATIO
+  DURATION_HOURS
+
+  @@map("kpi_unit")
+}
+
+enum KpiDirection {
+  HIGHER_IS_BETTER
+  LOWER_IS_BETTER
+
+  @@map("kpi_direction")
+}
+
+enum KpiAggregation {
+  SUM
+  AVERAGE
+  LAST
+  MAX
+  MIN
+
+  @@map("kpi_aggregation")
+}
+
+enum KpiScope {
+  ORGANIZATION
+  DEPARTMENT
+  TEAM
+  EMPLOYEE
+
+  @@map("kpi_scope")
+}
+
+enum DataSource {
+  MANUAL
+  IMPORT
+  INTEGRATION
+  SYSTEM
+
+  @@map("data_source")
+}
+
+enum PayrollRunType {
+  REGULAR
+  OFF_CYCLE
+  CORRECTION
+
+  @@map("payroll_run_type")
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  CALCULATED
+  SUBMITTED
+  APPROVED
+  PAYING
+  PAID
+  CANCELLED
+
+  @@map("payroll_run_status")
+}
+
+enum PayrollLineType {
+  BASE_SALARY
+  KPI_BONUS
+  COMMISSION
+  BONUS
+  ALLOWANCE
+  OVERTIME
+  REIMBURSEMENT
+  DEDUCTION
+  ADVANCE_RECOVERY
+  TAX_WITHHOLDING
+  EMPLOYER_CONTRIBUTION
+  ADJUSTMENT
+
+  @@map("payroll_line_type")
+}
+
+enum AdjustmentType {
+  BONUS
+  CORRECTION
+  DEDUCTION
+  REIMBURSEMENT
+  ADVANCE
+  ADVANCE_RECOVERY
+
+  @@map("adjustment_type")
+}
+
+enum AdjustmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+  CANCELLED
+
+  @@map("adjustment_status")
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+
+  @@map("approval_decision")
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  CRYPTO
+  PAYMENT_SERVICE
+  CASH
+  OTHER
+
+  @@map("payment_method")
+}
+
+enum PaymentStatus {
+  SCHEDULED
+  SENT
+  CONFIRMED
+  FAILED
+  REVERSED
+
+  @@map("payment_status")
+}
+
+enum WalletType {
+  BANK_ACCOUNT
+  CRYPTO_WALLET
+  PAYMENT_SERVICE
+
+  @@map("wallet_type")
+}
+
+enum ClientStatus {
+  PROSPECT
+  ACTIVE
+  INACTIVE
+
+  @@map("client_status")
+}
+
+enum ProjectStatus {
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+
+  @@map("project_status")
+}
+
+enum BillingModel {
+  FIXED_PRICE
+  TIME_AND_MATERIALS
+  RETAINER
+  REVENUE_SHARE
+  INTERNAL
+
+  @@map("billing_model")
+}
+
+enum IncomeStatus {
+  PLANNED
+  INVOICED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  WRITTEN_OFF
+
+  @@map("income_status")
+}
+
+enum CostStatus {
+  PLANNED
+  INCURRED
+  PAID
+  CANCELLED
+
+  @@map("cost_status")
+}
+
+enum CategoryKind {
+  REVENUE
+  COST_OF_SALES
+  OPERATING_EXPENSE
+  DEPRECIATION
+  AMORTIZATION
+  INTEREST
+  TAX
+  OTHER_INCOME
+  OTHER_EXPENSE
+
+  @@map("category_kind")
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+
+  @@map("account_type")
+}
+
+// Statement line an account rolls into. Drives P&L, EBITDA/EBIT, Balance Sheet and Cash Flow.
+enum AccountSubtype {
+  // Assets
+  CASH
+  RECEIVABLE
+  PREPAID
+  OTHER_CURRENT_ASSET
+  FIXED_ASSET
+  INTANGIBLE_ASSET
+  ACCUMULATED_DEPRECIATION
+  OTHER_NON_CURRENT_ASSET
+  // Liabilities
+  PAYABLE
+  PAYROLL_LIABILITY
+  TAX_LIABILITY
+  ACCRUED_LIABILITY
+  DEFERRED_REVENUE
+  SHORT_TERM_DEBT
+  LONG_TERM_DEBT
+  DISTRIBUTIONS_PAYABLE
+  OTHER_LIABILITY
+  // Equity
+  OWNER_CAPITAL
+  RETAINED_EARNINGS
+  DISTRIBUTIONS
+  // Income statement
+  OPERATING_REVENUE
+  COST_OF_SALES
+  OPERATING_EXPENSE // EBITDA-relevant
+  DEPRECIATION
+  AMORTIZATION
+  INTEREST_INCOME
+  INTEREST_EXPENSE
+  OTHER_INCOME
+  OTHER_EXPENSE
+  INCOME_TAX
+
+  @@map("account_subtype")
+}
+
+enum NormalBalance {
+  DEBIT
+  CREDIT
+
+  @@map("normal_balance")
+}
+
+enum CashFlowActivity {
+  OPERATING
+  INVESTING
+  FINANCING
+  NONE // cash accounts themselves and non-cash items
+
+  @@map("cash_flow_activity")
+}
+
+enum FinancialAccountType {
+  BANK
+  CASH
+  CRYPTO_WALLET
+  PAYMENT_PROVIDER
+  CREDIT_CARD
+  LOAN
+
+  @@map("financial_account_type")
+}
+
+enum JournalSource {
+  MANUAL
+  OPENING_BALANCE
+  PAYROLL
+  PAYROLL_PAYMENT
+  PROJECT_INCOME
+  PROJECT_COST
+  DISTRIBUTION
+  FX_REVALUATION
+  DEPRECIATION
+  PERIOD_CLOSE
+  REVERSAL
+
+  @@map("journal_source")
+}
+
+enum JournalStatus {
+  DRAFT
+  POSTED
+  REVERSED
+
+  @@map("journal_status")
+}
+
+enum ShareholderType {
+  INDIVIDUAL
+  COMPANY
+
+  @@map("shareholder_type")
+}
+
+enum DistributionType {
+  DIVIDEND
+  PROFIT_SHARE
+  OWNER_DRAW
+  RETURN_OF_CAPITAL
+
+  @@map("distribution_type")
+}
+
+enum DistributionStatus {
+  DRAFT
+  APPROVED
+  PAID
+  CANCELLED
+
+  @@map("distribution_status")
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+  INTEGRATION
+
+  @@map("audit_actor_type")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organization, users and role-based access
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A legal entity whose books are kept here. All business data is scoped to one organization.
+model Organization {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                 String
+  legalName            String?  @map("legal_name")
+  registrationNumber   String?  @map("registration_number")
+  taxId                String?  @map("tax_id")
+  country              String?  @db.Char(2)
+  baseCurrency         String   @map("base_currency") @db.VarChar(10)
+  fiscalYearStartMonth Int      @default(1) @map("fiscal_year_start_month") @db.SmallInt
+  timezone             String   @default("UTC")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  roles              Role[]
+  roleAssignments    UserRoleAssignment[]
+  periods            FinancialPeriod[]
+  exchangeRates      ExchangeRate[]
+  departments        Department[]
+  employees          Employee[]
+  compensationRules  CompensationRule[]
+  kpiDefinitions     KpiDefinition[]
+  kpiTargets         KpiTarget[]
+  kpiActuals         KpiActual[]
+  payrollRuns        PayrollRun[]
+  payrollAdjustments PayrollAdjustment[]
+  clients            Client[]
+  projects           Project[]
+  categories         FinancialCategory[]
+  ledgerAccounts     LedgerAccount[]
+  financialAccounts  FinancialAccount[]
+  journalEntries     JournalEntry[]
+  shareholders       Shareholder[]
+  distributions      Distribution[]
+  auditLogs          AuditLog[]
+
+  baseCurrencyRef Currency @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
+
+  @@map("organizations")
+}
+
+/// Application user. id equals the Supabase Auth user id (auth.users.id).
+model AppUser {
+  id           String     @id @db.Uuid
+  email        String     @unique
+  displayName  String?    @map("display_name")
+  status       UserStatus @default(INVITED)
+  isSuperAdmin Boolean    @default(false) @map("is_super_admin") // platform-wide; never settable through the API
+  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  employee              Employee?
+  shareholder           Shareholder?
+  roleAssignments       UserRoleAssignment[] @relation("AssignedUser")
+  grantedAssignments    UserRoleAssignment[] @relation("GrantedBy")
+  closedPeriods         FinancialPeriod[]
+  salaryApprovals       SalaryCondition[]
+  adjustmentsRequested  PayrollAdjustment[]  @relation("AdjustmentRequestedBy")
+  adjustmentsApproved   PayrollAdjustment[]  @relation("AdjustmentApprovedBy")
+  payrollApprovals      PayrollApproval[]
+  journalEntriesCreated JournalEntry[]       @relation("JournalCreatedBy")
+  journalEntriesPosted  JournalEntry[]       @relation("JournalPostedBy")
+  distributionApprovals Distribution[]
+  kpiActualsRecorded    KpiActual[]
+  auditLogs             AuditLog[]
+
+  @@map("app_users")
+}
+
+/// Configurable role per organization (e.g. Owner, CFO, Accountant, Department Head, Employee).
+model Role {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  key            String
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false) @map("is_system") // system roles cannot be deleted from the UI
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  permissions  RolePermission[]
+  assignments  UserRoleAssignment[]
+
+  @@unique([organizationId, key])
+  @@map("roles")
+}
+
+/// Global permission catalog, e.g. "payroll:approve", "journal:post", "employee:read_compensation".
+model Permission {
+  key         String @id
+  description String
+  category    String
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId        String @map("role_id") @db.Uuid
+  permissionKey String @map("permission_key")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key], onDelete: Restrict)
+
+  @@id([roleId, permissionKey])
+  @@map("role_permissions")
+}
+
+/// Grants a role to a user, optionally limited to one department (e.g. a department head
+/// sees only their department's employees, KPIs and payroll lines).
+model UserRoleAssignment {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  roleId            String    @map("role_id") @db.Uuid
+  scopeDepartmentId String?   @map("scope_department_id") @db.Uuid
+  validFrom         DateTime  @default(now()) @map("valid_from") @db.Timestamptz(6)
+  validTo           DateTime? @map("valid_to") @db.Timestamptz(6)
+  grantedById       String?   @map("granted_by_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user            AppUser      @relation("AssignedUser", fields: [userId], references: [id], onDelete: Restrict)
+  role            Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  scopeDepartment Department?  @relation(fields: [scopeDepartmentId], references: [id], onDelete: Restrict)
+  grantedBy       AppUser?     @relation("GrantedBy", fields: [grantedById], references: [id], onDelete: Restrict)
+
+  @@index([userId, organizationId])
+  @@index([roleId])
+  @@map("user_role_assignments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Periods and currency
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Accounting month. All monthly data (payroll, KPIs, project income/costs, journal entries)
+/// references a period; closing a period freezes its data.
+model FinancialPeriod {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  year           Int          @db.SmallInt
+  month          Int          @db.SmallInt
+  fiscalYear     Int          @map("fiscal_year") @db.SmallInt
+  startDate      DateTime     @map("start_date") @db.Date
+  endDate        DateTime     @map("end_date") @db.Date
+  status         PeriodStatus @default(OPEN)
+  closedAt       DateTime?    @map("closed_at") @db.Timestamptz(6)
+  closedById     String?      @map("closed_by_id") @db.Uuid
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  closedBy           AppUser?            @relation(fields: [closedById], references: [id], onDelete: Restrict)
+  kpiTargets         KpiTarget[]
+  kpiActuals         KpiActual[]
+  payrollRuns        PayrollRun[]
+  payrollAdjustments PayrollAdjustment[]
+  projectIncome      ProjectIncome[]
+  projectCosts       ProjectCost[]
+  journalEntries     JournalEntry[]
+  distributions      Distribution[]
+
+  @@unique([organizationId, year, month])
+  @@index([organizationId, status])
+  @@map("financial_periods")
+}
+
+/// Currency reference data (fiat, stablecoins, crypto). Every currency column references this table,
+/// so adding a currency is a row insert. decimals = minor-unit precision used for rounding.
+model Currency {
+  code      String       @id @db.VarChar(10) // ISO 4217 for fiat (USD, EUR, GBP); ticker for crypto (USDT)
+  name      String
+  kind      CurrencyKind
+  decimals  Int          @db.SmallInt
+  symbol    String?
+  isActive  Boolean      @default(true) @map("is_active")
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organizationBaseCurrencies       Organization[]      @relation("OrganizationBaseCurrency")
+  exchangeRateBaseCurrencies       ExchangeRate[]      @relation("ExchangeRateBaseCurrency")
+  exchangeRateQuoteCurrencies      ExchangeRate[]      @relation("ExchangeRateQuoteCurrency")
+  salaryConditionCurrencies        SalaryCondition[]   @relation("SalaryConditionCurrency")
+  compensationRuleCurrencies       CompensationRule[]  @relation("CompensationRuleCurrency")
+  kpiDefinitionCurrencies          KpiDefinition[]     @relation("KpiDefinitionCurrency")
+  payrollRunCurrencies             PayrollRun[]        @relation("PayrollRunCurrency")
+  payrollItemCurrencies            PayrollItem[]       @relation("PayrollItemCurrency")
+  payrollAdjustmentCurrencies      PayrollAdjustment[] @relation("PayrollAdjustmentCurrency")
+  payrollPaymentCurrencies         PayrollPayment[]    @relation("PayrollPaymentCurrency")
+  payoutWalletCurrencies           PayoutWallet[]      @relation("PayoutWalletCurrency")
+  clientDefaultCurrencies          Client[]            @relation("ClientDefaultCurrency")
+  projectCurrencies                Project[]           @relation("ProjectCurrency")
+  projectIncomeCurrencies          ProjectIncome[]     @relation("ProjectIncomeCurrency")
+  projectCostCurrencies            ProjectCost[]       @relation("ProjectCostCurrency")
+  ledgerAccountCurrencies          LedgerAccount[]     @relation("LedgerAccountCurrency")
+  financialAccountCurrencies       FinancialAccount[]  @relation("FinancialAccountCurrency")
+  journalLineTransactionCurrencies JournalLine[]       @relation("JournalLineTransactionCurrency")
+  ownershipStakeCurrencies         OwnershipStake[]    @relation("OwnershipStakeCurrency")
+  distributionCurrencies           Distribution[]      @relation("DistributionCurrency")
+
+  @@map("currencies")
+}
+
+/// Daily FX rate: 1 unit of baseCurrency = rate units of quoteCurrency.
+model ExchangeRate {
+  id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  baseCurrency   String     @map("base_currency") @db.VarChar(10)
+  quoteCurrency  String     @map("quote_currency") @db.VarChar(10)
+  rateDate       DateTime   @map("rate_date") @db.Date
+  rate           Decimal    @db.Decimal(28, 12)
+  source         DataSource @default(MANUAL)
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  baseCurrencyRef  Currency     @relation("ExchangeRateBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
+  quoteCurrencyRef Currency     @relation("ExchangeRateQuoteCurrency", fields: [quoteCurrency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, baseCurrency, quoteCurrency, rateDate])
+  @@map("exchange_rates")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Organization structure and people
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Configurable department. costClassification decides whether its payroll is cost of sales
+/// (delivery teams) or operating expense (overhead) on the P&L.
+model Department {
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String       @map("organization_id") @db.Uuid
+  parentId           String?      @map("parent_id") @db.Uuid
+  code               String
+  name               String
+  description        String?
+  costClassification CategoryKind @default(OPERATING_EXPENSE) @map("cost_classification")
+  headEmployeeId     String?      @unique @map("head_employee_id") @db.Uuid
+  archivedAt         DateTime?    @map("archived_at") @db.Timestamptz(6)
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  parent             Department?              @relation("DepartmentTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children           Department[]             @relation("DepartmentTree")
+  head               Employee?                @relation("DepartmentHead", fields: [headEmployeeId], references: [id], onDelete: SetNull)
+  teams              Team[]
+  assignments        EmployeeAssignment[]
+  roleAssignments    UserRoleAssignment[]
+  compensationScopes CompensationAssignment[]
+  kpiTargets         KpiTarget[]
+  kpiActuals         KpiActual[]
+  payrollItems       PayrollItem[]
+  projects           Project[]
+  journalLines       JournalLine[]
+
+  @@unique([organizationId, code])
+  @@index([parentId])
+  @@map("departments")
+}
+
+model Team {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  departmentId   String    @map("department_id") @db.Uuid
+  code           String
+  name           String
+  description    String?
+  leadEmployeeId String?   @map("lead_employee_id") @db.Uuid
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  department         Department               @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  lead               Employee?                @relation("TeamLead", fields: [leadEmployeeId], references: [id], onDelete: SetNull)
+  assignments        EmployeeAssignment[]
+  compensationScopes CompensationAssignment[]
+  kpiTargets         KpiTarget[]
+  kpiActuals         KpiActual[]
+  payrollItems       PayrollItem[]
+
+  @@unique([departmentId, code])
+  @@map("teams")
+}
+
+model Employee {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String         @map("organization_id") @db.Uuid
+  userId          String?        @unique @map("user_id") @db.Uuid
+  employeeNumber  String         @map("employee_number")
+  firstName       String         @map("first_name")
+  lastName        String         @map("last_name")
+  preferredName   String?        @map("preferred_name")
+  workEmail       String?        @map("work_email")
+  personalEmail   String?        @map("personal_email")
+  jobTitle        String?        @map("job_title")
+  country         String?        @db.Char(2)
+  status          EmployeeStatus @default(ONBOARDING)
+  hireDate        DateTime       @map("hire_date") @db.Date
+  terminationDate DateTime?      @map("termination_date") @db.Date
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user               AppUser?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  headOfDepartment   Department?              @relation("DepartmentHead")
+  leadOfTeams        Team[]                   @relation("TeamLead")
+  assignments        EmployeeAssignment[]
+  agreements         EmploymentAgreement[]
+  salaryConditions   SalaryCondition[]
+  compensationScopes CompensationAssignment[]
+  kpiTargets         KpiTarget[]
+  kpiActuals         KpiActual[]
+  payrollItems       PayrollItem[]
+  payrollAdjustments PayrollAdjustment[]
+  payoutWallets      PayoutWallet[]
+  managedProjects    Project[]
+  projectCosts       ProjectCost[]
+  journalLines       JournalLine[]
+  shareholder        Shareholder?
+
+  @@unique([organizationId, employeeNumber])
+  @@unique([organizationId, workEmail])
+  @@index([organizationId, status])
+  @@map("employees")
+}
+
+/// Effective-dated department/team membership; preserves historical cost allocation.
+model EmployeeAssignment {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  departmentId   String    @map("department_id") @db.Uuid
+  teamId         String?   @map("team_id") @db.Uuid
+  allocationRate Decimal   @default(1) @map("allocation_rate") @db.Decimal(12, 8) // share of time/cost; rates per employee sum to 1
+  isPrimary      Boolean   @default(true) @map("is_primary")
+  validFrom      DateTime  @map("valid_from") @db.Date
+  validTo        DateTime? @map("valid_to") @db.Date
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  team       Team?      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId, validFrom])
+  @@index([departmentId])
+  @@map("employee_assignments")
+}
+
+model EmploymentAgreement {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId       String          @map("employee_id") @db.Uuid
+  agreementNumber  String?         @map("agreement_number")
+  type             AgreementType
+  status           AgreementStatus @default(DRAFT)
+  startDate        DateTime        @map("start_date") @db.Date
+  endDate          DateTime?       @map("end_date") @db.Date
+  signedAt         DateTime?       @map("signed_at") @db.Date
+  hoursPerWeek     Decimal?        @map("hours_per_week") @db.Decimal(6, 2)
+  noticePeriodDays Int?            @map("notice_period_days")
+  governingCountry String?         @map("governing_country") @db.Char(2)
+  documentPath     String?         @map("document_path") // Supabase Storage object path; documents are never stored inline
+  notes            String?
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  employee         Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  salaryConditions SalaryCondition[]
+
+  @@index([employeeId, startDate])
+  @@map("employment_agreements")
+}
+
+/// Effective-dated base pay. A change creates a new row; old rows are never edited after use.
+model SalaryCondition {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId            String    @map("employee_id") @db.Uuid
+  agreementId           String?   @map("agreement_id") @db.Uuid
+  payBasis              PayBasis  @map("pay_basis")
+  baseAmount            Decimal   @map("base_amount") @db.Decimal(24, 8)
+  currency              String    @db.VarChar(10)
+  standardHoursPerMonth Decimal?  @map("standard_hours_per_month") @db.Decimal(6, 2) // for HOURLY/DAILY conversion
+  validFrom             DateTime  @map("valid_from") @db.Date
+  validTo               DateTime? @map("valid_to") @db.Date
+  changeReason          String?   @map("change_reason")
+  approvedById          String?   @map("approved_by_id") @db.Uuid
+  approvedAt            DateTime? @map("approved_at") @db.Timestamptz(6)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee     Employee             @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  agreement    EmploymentAgreement? @relation(fields: [agreementId], references: [id], onDelete: Restrict)
+  approvedBy   AppUser?             @relation(fields: [approvedById], references: [id], onDelete: Restrict)
+  payrollItems PayrollItem[]
+  currencyRef  Currency             @relation("SalaryConditionCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([employeeId, validFrom])
+  @@map("salary_conditions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compensation rules and KPIs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reusable, versioned bonus/commission/allowance/deduction rule. A new version is a new row
+/// (same code, later validFrom), so past payroll stays reproducible.
+model CompensationRule {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String            @map("organization_id") @db.Uuid
+  code            String
+  version         Int               @default(1)
+  name            String
+  description     String?
+  type            CompensationType
+  method          CalculationMethod
+  fixedAmount     Decimal?          @map("fixed_amount") @db.Decimal(24, 8)
+  rate            Decimal?          @db.Decimal(12, 8)
+  currency        String?           @db.VarChar(10)
+  kpiDefinitionId String?           @map("kpi_definition_id") @db.Uuid
+  capAmount       Decimal?          @map("cap_amount") @db.Decimal(24, 8)
+  floorAmount     Decimal?          @map("floor_amount") @db.Decimal(24, 8)
+  categoryId      String?           @map("category_id") @db.Uuid // P&L category the payout is booked to
+  validFrom       DateTime          @map("valid_from") @db.Date
+  validTo         DateTime?         @map("valid_to") @db.Date
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  kpiDefinition KpiDefinition?           @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  category      FinancialCategory?       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  tiers         CompensationRuleTier[]
+  assignments   CompensationAssignment[]
+  payrollLines  PayrollItemLine[]
+  adjustments   PayrollAdjustment[]
+  currencyRef   Currency?                @relation("CompensationRuleCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, code, version])
+  @@map("compensation_rules")
+}
+
+/// Tier for TIERED rules: applies when the metric is >= fromValue and < toValue.
+model CompensationRuleTier {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ruleId      String   @map("rule_id") @db.Uuid
+  sortOrder   Int      @map("sort_order")
+  fromValue   Decimal  @map("from_value") @db.Decimal(24, 8)
+  toValue     Decimal? @map("to_value") @db.Decimal(24, 8)
+  rate        Decimal? @db.Decimal(12, 8)
+  fixedAmount Decimal? @map("fixed_amount") @db.Decimal(24, 8)
+
+  rule CompensationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, sortOrder])
+  @@map("compensation_rule_tiers")
+}
+
+/// Applies a rule to exactly one of: department, team or employee (checked in SQL).
+model CompensationAssignment {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ruleId       String    @map("rule_id") @db.Uuid
+  departmentId String?   @map("department_id") @db.Uuid
+  teamId       String?   @map("team_id") @db.Uuid
+  employeeId   String?   @map("employee_id") @db.Uuid
+  validFrom    DateTime  @map("valid_from") @db.Date
+  validTo      DateTime? @map("valid_to") @db.Date
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rule       CompensationRule @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  department Department?      @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  team       Team?            @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  employee   Employee?        @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@index([ruleId])
+  @@index([employeeId])
+  @@map("compensation_assignments")
+}
+
+model KpiDefinition {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  description    String?
+  unit           KpiUnit
+  currency       String?        @db.VarChar(10) // when unit = CURRENCY
+  direction      KpiDirection   @default(HIGHER_IS_BETTER)
+  aggregation    KpiAggregation @default(SUM)
+  archivedAt     DateTime?      @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  targets           KpiTarget[]
+  actuals           KpiActual[]
+  compensationRules CompensationRule[]
+  currencyRef       Currency?          @relation("KpiDefinitionCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, code])
+  @@map("kpi_definitions")
+}
+
+/// Monthly KPI target for one scope. scopeKey ("ORG", "DEPARTMENT:<id>", "TEAM:<id>",
+/// "EMPLOYEE:<id>") makes the target unique per scope; SQL checks it matches the FK columns.
+model KpiTarget {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  kpiDefinitionId String   @map("kpi_definition_id") @db.Uuid
+  periodId        String   @map("period_id") @db.Uuid
+  scope           KpiScope
+  scopeKey        String   @map("scope_key")
+  departmentId    String?  @map("department_id") @db.Uuid
+  teamId          String?  @map("team_id") @db.Uuid
+  employeeId      String?  @map("employee_id") @db.Uuid
+  targetValue     Decimal  @map("target_value") @db.Decimal(24, 8)
+  stretchValue    Decimal? @map("stretch_value") @db.Decimal(24, 8)
+  weight          Decimal? @db.Decimal(12, 8)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  kpiDefinition KpiDefinition   @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  period        FinancialPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  department    Department?     @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  team          Team?           @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  employee      Employee?       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([kpiDefinitionId, periodId, scopeKey])
+  @@index([periodId])
+  @@map("kpi_targets")
+}
+
+/// Monthly KPI result for one scope (same scoping rules as KpiTarget).
+model KpiActual {
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String     @map("organization_id") @db.Uuid
+  kpiDefinitionId String     @map("kpi_definition_id") @db.Uuid
+  periodId        String     @map("period_id") @db.Uuid
+  scope           KpiScope
+  scopeKey        String     @map("scope_key")
+  departmentId    String?    @map("department_id") @db.Uuid
+  teamId          String?    @map("team_id") @db.Uuid
+  employeeId      String?    @map("employee_id") @db.Uuid
+  actualValue     Decimal    @map("actual_value") @db.Decimal(24, 8)
+  source          DataSource @default(MANUAL)
+  notes           String?
+  recordedById    String?    @map("recorded_by_id") @db.Uuid
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  kpiDefinition KpiDefinition     @relation(fields: [kpiDefinitionId], references: [id], onDelete: Restrict)
+  period        FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  department    Department?       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  team          Team?             @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  employee      Employee?         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  recordedBy    AppUser?          @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  payrollLines  PayrollItemLine[]
+
+  @@unique([kpiDefinitionId, periodId, scopeKey])
+  @@index([periodId])
+  @@map("kpi_actuals")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payroll
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One payroll run per period (plus optional off-cycle/correction runs).
+model PayrollRun {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  periodId       String           @map("period_id") @db.Uuid
+  runType        PayrollRunType   @default(REGULAR) @map("run_type")
+  sequence       Int              @default(1)
+  status         PayrollRunStatus @default(DRAFT)
+  currency       String           @db.VarChar(10) // reporting currency of the totals
+  payDate        DateTime?        @map("pay_date") @db.Date
+  calculatedAt   DateTime?        @map("calculated_at") @db.Timestamptz(6)
+  notes          String?
+  journalEntryId String?          @unique @map("journal_entry_id") @db.Uuid // accrual entry (expense / payroll liability)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period       FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  journalEntry JournalEntry?     @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  items        PayrollItem[]
+  approvals    PayrollApproval[]
+  currencyRef  Currency          @relation("PayrollRunCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, periodId, runType, sequence])
+  @@map("payroll_runs")
+}
+
+/// One employee's payslip in a run. Department/team/salary are snapshotted so later
+/// re-organizations and raises never change historical payroll.
+model PayrollItem {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payrollRunId       String   @map("payroll_run_id") @db.Uuid
+  employeeId         String   @map("employee_id") @db.Uuid
+  salaryConditionId  String?  @map("salary_condition_id") @db.Uuid
+  departmentId       String?  @map("department_id") @db.Uuid
+  teamId             String?  @map("team_id") @db.Uuid
+  currency           String   @db.VarChar(10)
+  fxRateToBase       Decimal  @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
+  grossAmount        Decimal  @default(0) @map("gross_amount") @db.Decimal(24, 8)
+  deductionsAmount   Decimal  @default(0) @map("deductions_amount") @db.Decimal(24, 8)
+  netAmount          Decimal  @default(0) @map("net_amount") @db.Decimal(24, 8)
+  employerCostAmount Decimal  @default(0) @map("employer_cost_amount") @db.Decimal(24, 8) // gross + employer contributions
+  baseNetAmount      Decimal  @default(0) @map("base_net_amount") @db.Decimal(24, 8) // net in organization base currency
+  workedDays         Decimal? @map("worked_days") @db.Decimal(6, 2)
+  workedHours        Decimal? @map("worked_hours") @db.Decimal(8, 2)
+  notes              String?
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  payrollRun      PayrollRun        @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
+  employee        Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  salaryCondition SalaryCondition?  @relation(fields: [salaryConditionId], references: [id], onDelete: Restrict)
+  department      Department?       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  team            Team?             @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  lines           PayrollItemLine[]
+  payments        PayrollPayment[]
+  projectCosts    ProjectCost[]
+  currencyRef     Currency          @relation("PayrollItemCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([payrollRunId, employeeId])
+  @@index([employeeId])
+  @@map("payroll_items")
+}
+
+/// Itemized payslip line. amount is signed by type: earnings positive, deductions negative.
+model PayrollItemLine {
+  id                 String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payrollItemId      String          @map("payroll_item_id") @db.Uuid
+  lineType           PayrollLineType @map("line_type")
+  description        String
+  quantity           Decimal?        @db.Decimal(12, 4)
+  rate               Decimal?        @db.Decimal(28, 12)
+  amount             Decimal         @db.Decimal(24, 8)
+  compensationRuleId String?         @map("compensation_rule_id") @db.Uuid
+  kpiActualId        String?         @map("kpi_actual_id") @db.Uuid
+  adjustmentId       String?         @unique @map("adjustment_id") @db.Uuid
+  categoryId         String?         @map("category_id") @db.Uuid
+  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  payrollItem      PayrollItem        @relation(fields: [payrollItemId], references: [id], onDelete: Cascade)
+  compensationRule CompensationRule?  @relation(fields: [compensationRuleId], references: [id], onDelete: Restrict)
+  kpiActual        KpiActual?         @relation(fields: [kpiActualId], references: [id], onDelete: Restrict)
+  adjustment       PayrollAdjustment? @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
+  category         FinancialCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([payrollItemId])
+  @@map("payroll_item_lines")
+}
+
+/// Bonus, correction, deduction, reimbursement or advance requested for an employee and period.
+/// Once approved, it is applied to a payroll item as exactly one PayrollItemLine.
+model PayrollAdjustment {
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String           @map("organization_id") @db.Uuid
+  employeeId         String           @map("employee_id") @db.Uuid
+  periodId           String           @map("period_id") @db.Uuid
+  type               AdjustmentType
+  status             AdjustmentStatus @default(PENDING)
+  amount             Decimal          @db.Decimal(24, 8) // always positive; sign comes from type
+  currency           String           @db.VarChar(10)
+  reason             String
+  compensationRuleId String?          @map("compensation_rule_id") @db.Uuid
+  requestedById      String?          @map("requested_by_id") @db.Uuid
+  approvedById       String?          @map("approved_by_id") @db.Uuid
+  decidedAt          DateTime?        @map("decided_at") @db.Timestamptz(6)
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employee         Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  period           FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  compensationRule CompensationRule? @relation(fields: [compensationRuleId], references: [id], onDelete: Restrict)
+  requestedBy      AppUser?          @relation("AdjustmentRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy       AppUser?          @relation("AdjustmentApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  payrollLine      PayrollItemLine?
+  currencyRef      Currency          @relation("PayrollAdjustmentCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([employeeId, periodId])
+  @@index([periodId, status])
+  @@map("payroll_adjustments")
+}
+
+/// Approval trail for a payroll run (multi-step sign-off).
+model PayrollApproval {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payrollRunId String           @map("payroll_run_id") @db.Uuid
+  step         Int
+  approverId   String           @map("approver_id") @db.Uuid
+  decision     ApprovalDecision
+  comment      String?
+  decidedAt    DateTime         @default(now()) @map("decided_at") @db.Timestamptz(6)
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
+  approver   AppUser    @relation(fields: [approverId], references: [id], onDelete: Restrict)
+
+  @@index([payrollRunId, step])
+  @@map("payroll_approvals")
+}
+
+/// Actual payout to an employee wallet; split payouts are multiple rows.
+model PayrollPayment {
+  id                 String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payrollItemId      String        @map("payroll_item_id") @db.Uuid
+  payoutWalletId     String        @map("payout_wallet_id") @db.Uuid
+  financialAccountId String        @map("financial_account_id") @db.Uuid // company account the money left from
+  method             PaymentMethod
+  status             PaymentStatus @default(SCHEDULED)
+  amount             Decimal       @db.Decimal(24, 8)
+  currency           String        @db.VarChar(10)
+  fxRateToBase       Decimal       @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
+  baseAmount         Decimal       @map("base_amount") @db.Decimal(24, 8)
+  feeAmount          Decimal       @default(0) @map("fee_amount") @db.Decimal(24, 8)
+  scheduledFor       DateTime?     @map("scheduled_for") @db.Date
+  paidAt             DateTime?     @map("paid_at") @db.Timestamptz(6)
+  externalReference  String?       @map("external_reference") // bank reference or blockchain transaction hash
+  journalEntryId     String?       @unique @map("journal_entry_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  payrollItem      PayrollItem      @relation(fields: [payrollItemId], references: [id], onDelete: Restrict)
+  payoutWallet     PayoutWallet     @relation(fields: [payoutWalletId], references: [id], onDelete: Restrict)
+  financialAccount FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+  journalEntry     JournalEntry?    @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  currencyRef      Currency         @relation("PayrollPaymentCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([payrollItemId])
+  @@index([status])
+  @@map("payroll_payments")
+}
+
+/// Where an employee is paid. Full account numbers / addresses are stored only encrypted
+/// (application-level, key outside the database); maskedIdentifier is safe to display.
+model PayoutWallet {
+  id               String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employeeId       String     @map("employee_id") @db.Uuid
+  type             WalletType
+  label            String
+  currency         String     @db.VarChar(10)
+  network          String? // e.g. blockchain network for crypto wallets
+  providerName     String?    @map("provider_name") // bank or payment service name
+  maskedIdentifier String     @map("masked_identifier") // e.g. "•••• 1234"
+  detailsEncrypted Bytes?     @map("details_encrypted")
+  isDefault        Boolean    @default(false) @map("is_default")
+  verifiedAt       DateTime?  @map("verified_at") @db.Timestamptz(6)
+  archivedAt       DateTime?  @map("archived_at") @db.Timestamptz(6)
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  employee    Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  payments    PayrollPayment[]
+  currencyRef Currency         @relation("PayoutWalletCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([employeeId])
+  @@map("payout_wallets")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Clients and projects
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Client {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String       @map("organization_id") @db.Uuid
+  code            String
+  name            String
+  legalName       String?      @map("legal_name")
+  taxId           String?      @map("tax_id")
+  country         String?      @db.Char(2)
+  defaultCurrency String?      @map("default_currency") @db.VarChar(10)
+  billingEmail    String?      @map("billing_email")
+  status          ClientStatus @default(ACTIVE)
+  notes           String?
+  archivedAt      DateTime?    @map("archived_at") @db.Timestamptz(6)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization       Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  projects           Project[]
+  journalLines       JournalLine[]
+  defaultCurrencyRef Currency?     @relation("ClientDefaultCurrency", fields: [defaultCurrency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, code])
+  @@map("clients")
+}
+
+model Project {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String        @map("organization_id") @db.Uuid
+  clientId          String?       @map("client_id") @db.Uuid // null = internal project
+  departmentId      String?       @map("department_id") @db.Uuid // owning department
+  managerEmployeeId String?       @map("manager_employee_id") @db.Uuid
+  code              String
+  name              String
+  description       String?
+  status            ProjectStatus @default(PLANNED)
+  billingModel      BillingModel  @map("billing_model")
+  contractValue     Decimal?      @map("contract_value") @db.Decimal(24, 8)
+  currency          String        @db.VarChar(10)
+  startDate         DateTime?     @map("start_date") @db.Date
+  endDate           DateTime?     @map("end_date") @db.Date
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  client       Client?         @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  department   Department?     @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  manager      Employee?       @relation(fields: [managerEmployeeId], references: [id], onDelete: SetNull)
+  income       ProjectIncome[]
+  costs        ProjectCost[]
+  journalLines JournalLine[]
+  currencyRef  Currency        @relation("ProjectCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, code])
+  @@index([clientId])
+  @@map("projects")
+}
+
+/// Revenue recognized for a project in a period (invoice-level). Posted to the ledger via journalEntry.
+model ProjectIncome {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId      String       @map("project_id") @db.Uuid
+  periodId       String       @map("period_id") @db.Uuid
+  categoryId     String       @map("category_id") @db.Uuid
+  description    String
+  status         IncomeStatus @default(PLANNED)
+  amount         Decimal      @db.Decimal(24, 8)
+  currency       String       @db.VarChar(10)
+  fxRateToBase   Decimal      @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
+  baseAmount     Decimal      @map("base_amount") @db.Decimal(24, 8)
+  invoiceNumber  String?      @map("invoice_number")
+  invoiceDate    DateTime?    @map("invoice_date") @db.Date
+  dueDate        DateTime?    @map("due_date") @db.Date
+  receivedAmount Decimal      @default(0) @map("received_amount") @db.Decimal(24, 8)
+  receivedDate   DateTime?    @map("received_date") @db.Date
+  journalEntryId String?      @unique @map("journal_entry_id") @db.Uuid
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project      Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  period       FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  category     FinancialCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  journalEntry JournalEntry?     @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  currencyRef  Currency          @relation("ProjectIncomeCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([projectId, periodId])
+  @@index([periodId])
+  @@map("project_income")
+}
+
+/// Direct cost attributed to a project in a period: vendor costs or allocated labor.
+model ProjectCost {
+  id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId      String     @map("project_id") @db.Uuid
+  periodId       String     @map("period_id") @db.Uuid
+  categoryId     String     @map("category_id") @db.Uuid
+  description    String
+  status         CostStatus @default(INCURRED)
+  employeeId     String?    @map("employee_id") @db.Uuid // labor allocation
+  payrollItemId  String?    @map("payroll_item_id") @db.Uuid // source payroll item for allocated labor
+  vendorName     String?    @map("vendor_name")
+  amount         Decimal    @db.Decimal(24, 8)
+  currency       String     @db.VarChar(10)
+  fxRateToBase   Decimal    @default(1) @map("fx_rate_to_base") @db.Decimal(28, 12)
+  baseAmount     Decimal    @map("base_amount") @db.Decimal(24, 8)
+  incurredDate   DateTime   @map("incurred_date") @db.Date
+  paidDate       DateTime?  @map("paid_date") @db.Date
+  journalEntryId String?    @unique @map("journal_entry_id") @db.Uuid
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project      Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  period       FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  category     FinancialCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  employee     Employee?         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  payrollItem  PayrollItem?      @relation(fields: [payrollItemId], references: [id], onDelete: Restrict)
+  journalEntry JournalEntry?     @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  currencyRef  Currency          @relation("ProjectCostCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([projectId, periodId])
+  @@index([periodId])
+  @@map("project_costs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chart of accounts, money accounts and the general ledger
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// User-defined revenue/expense category (hierarchical). Maps to a ledger account for posting
+/// and carries a kind so reports can separate EBITDA items from D&A, interest and tax.
+model FinancialCategory {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String       @map("organization_id") @db.Uuid
+  parentId        String?      @map("parent_id") @db.Uuid
+  kind            CategoryKind
+  code            String
+  name            String
+  description     String?
+  ledgerAccountId String?      @map("ledger_account_id") @db.Uuid
+  sortOrder       Int          @default(0) @map("sort_order")
+  archivedAt      DateTime?    @map("archived_at") @db.Timestamptz(6)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  parent            FinancialCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children          FinancialCategory[] @relation("CategoryTree")
+  ledgerAccount     LedgerAccount?      @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  compensationRules CompensationRule[]
+  payrollLines      PayrollItemLine[]
+  projectIncome     ProjectIncome[]
+  projectCosts      ProjectCost[]
+  journalLines      JournalLine[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, kind])
+  @@map("financial_categories")
+}
+
+/// Chart of accounts. type/subtype/normalBalance/cashFlowActivity drive all financial statements.
+model LedgerAccount {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String           @map("organization_id") @db.Uuid
+  parentId         String?          @map("parent_id") @db.Uuid
+  code             String
+  name             String
+  description      String?
+  type             AccountType
+  subtype          AccountSubtype
+  normalBalance    NormalBalance    @map("normal_balance")
+  cashFlowActivity CashFlowActivity @default(OPERATING) @map("cash_flow_activity")
+  isPostable       Boolean          @default(true) @map("is_postable") // false for header/grouping accounts
+  currency         String?          @db.VarChar(10) // set for accounts restricted to one currency
+  archivedAt       DateTime?        @map("archived_at") @db.Timestamptz(6)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization     Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  parent           LedgerAccount?      @relation("AccountTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children         LedgerAccount[]     @relation("AccountTree")
+  categories       FinancialCategory[]
+  financialAccount FinancialAccount?
+  journalLines     JournalLine[]
+  currencyRef      Currency?           @relation("LedgerAccountCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@unique([organizationId, code])
+  @@index([organizationId, type, subtype])
+  @@map("ledger_accounts")
+}
+
+/// Real-world money account (bank, cash box, crypto wallet, payment provider, card, loan).
+/// Each maps 1:1 to a ledger account so its balance is always derivable from the ledger.
+model FinancialAccount {
+  id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String               @map("organization_id") @db.Uuid
+  ledgerAccountId  String               @unique @map("ledger_account_id") @db.Uuid
+  type             FinancialAccountType
+  name             String
+  institution      String?
+  currency         String               @db.VarChar(10)
+  maskedIdentifier String?              @map("masked_identifier")
+  openedAt         DateTime?            @map("opened_at") @db.Date
+  closedAt         DateTime?            @map("closed_at") @db.Date
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  ledgerAccount        LedgerAccount            @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  payrollPayments      PayrollPayment[]
+  distributionPayments DistributionAllocation[]
+  currencyRef          Currency                 @relation("FinancialAccountCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@map("financial_accounts")
+}
+
+/// Double-entry journal entry. Must balance (sum of debits = sum of credits) to be POSTED;
+/// posted entries are immutable and corrected only by a reversing entry.
+model JournalEntry {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String        @map("organization_id") @db.Uuid
+  periodId        String        @map("period_id") @db.Uuid
+  entryNumber     Int           @map("entry_number")
+  entryDate       DateTime      @map("entry_date") @db.Date
+  description     String
+  source          JournalSource @default(MANUAL)
+  status          JournalStatus @default(DRAFT)
+  reversesEntryId String?       @unique @map("reverses_entry_id") @db.Uuid
+  createdById     String?       @map("created_by_id") @db.Uuid
+  postedById      String?       @map("posted_by_id") @db.Uuid
+  postedAt        DateTime?     @map("posted_at") @db.Timestamptz(6)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period         FinancialPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  reverses       JournalEntry?   @relation("Reversal", fields: [reversesEntryId], references: [id], onDelete: Restrict)
+  reversedBy     JournalEntry?   @relation("Reversal")
+  createdBy      AppUser?        @relation("JournalCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  postedBy       AppUser?        @relation("JournalPostedBy", fields: [postedById], references: [id], onDelete: Restrict)
+  lines          JournalLine[]
+  payrollRun     PayrollRun?
+  payrollPayment PayrollPayment?
+  projectIncome  ProjectIncome?
+  projectCost    ProjectCost?
+  distribution   Distribution?
+
+  @@unique([organizationId, entryNumber])
+  @@index([periodId, status])
+  @@index([organizationId, entryDate])
+  @@map("journal_entries")
+}
+
+/// Journal line in base currency (debit XOR credit > 0), with optional original-currency amount
+/// and reporting dimensions (department, project, client, employee, category).
+model JournalLine {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  journalEntryId      String   @map("journal_entry_id") @db.Uuid
+  lineNumber          Int      @map("line_number")
+  ledgerAccountId     String   @map("ledger_account_id") @db.Uuid
+  debit               Decimal  @default(0) @db.Decimal(24, 8)
+  credit              Decimal  @default(0) @db.Decimal(24, 8)
+  transactionCurrency String?  @map("transaction_currency") @db.VarChar(10)
+  transactionAmount   Decimal? @map("transaction_amount") @db.Decimal(24, 8)
+  fxRateToBase        Decimal? @map("fx_rate_to_base") @db.Decimal(28, 12)
+  description         String?
+  departmentId        String?  @map("department_id") @db.Uuid
+  projectId           String?  @map("project_id") @db.Uuid
+  clientId            String?  @map("client_id") @db.Uuid
+  employeeId          String?  @map("employee_id") @db.Uuid
+  categoryId          String?  @map("category_id") @db.Uuid
+
+  journalEntry           JournalEntry       @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  ledgerAccount          LedgerAccount      @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  department             Department?        @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  project                Project?           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  client                 Client?            @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  employee               Employee?          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  category               FinancialCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  transactionCurrencyRef Currency?          @relation("JournalLineTransactionCurrency", fields: [transactionCurrency], references: [code], onDelete: Restrict)
+
+  @@unique([journalEntryId, lineNumber])
+  @@index([ledgerAccountId])
+  @@index([projectId])
+  @@index([departmentId])
+  @@map("journal_lines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ownership and investor distributions
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Shareholder {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  type           ShareholderType
+  name           String
+  email          String?
+  taxId          String?         @map("tax_id")
+  country        String?         @db.Char(2)
+  userId         String?         @unique @map("user_id") @db.Uuid // investor portal access
+  employeeId     String?         @unique @map("employee_id") @db.Uuid
+  archivedAt     DateTime?       @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         AppUser?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  employee     Employee?                @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  stakes       OwnershipStake[]
+  allocations  DistributionAllocation[]
+
+  @@index([organizationId])
+  @@map("shareholders")
+}
+
+/// Effective-dated ownership share (fraction, 0.25 = 25%). A cap-table change ends the old
+/// row and starts a new one; active shares per organization must not exceed 1 (checked in SQL).
+model OwnershipStake {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shareholderId      String    @map("shareholder_id") @db.Uuid
+  shareClass         String    @default("COMMON") @map("share_class")
+  ownershipShare     Decimal   @map("ownership_share") @db.Decimal(12, 8)
+  profitShare        Decimal?  @map("profit_share") @db.Decimal(12, 8) // if profit rights differ from ownership
+  units              Decimal?  @db.Decimal(24, 8)
+  capitalContributed Decimal   @default(0) @map("capital_contributed") @db.Decimal(24, 8)
+  currency           String    @db.VarChar(10)
+  validFrom          DateTime  @map("valid_from") @db.Date
+  validTo            DateTime? @map("valid_to") @db.Date
+  notes              String?
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  shareholder Shareholder              @relation(fields: [shareholderId], references: [id], onDelete: Restrict)
+  allocations DistributionAllocation[]
+  currencyRef Currency                 @relation("OwnershipStakeCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([shareholderId, validFrom])
+  @@map("ownership_stakes")
+}
+
+/// Declared distribution to owners/investors, allocated per shareholder.
+model Distribution {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  periodId       String             @map("period_id") @db.Uuid
+  type           DistributionType
+  status         DistributionStatus @default(DRAFT)
+  declaredDate   DateTime           @map("declared_date") @db.Date
+  basisAmount    Decimal?           @map("basis_amount") @db.Decimal(24, 8) // e.g. distributable net profit used
+  totalAmount    Decimal            @map("total_amount") @db.Decimal(24, 8)
+  currency       String             @db.VarChar(10)
+  notes          String?
+  approvedById   String?            @map("approved_by_id") @db.Uuid
+  approvedAt     DateTime?          @map("approved_at") @db.Timestamptz(6)
+  journalEntryId String?            @unique @map("journal_entry_id") @db.Uuid // declaration entry
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period       FinancialPeriod          @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  approvedBy   AppUser?                 @relation(fields: [approvedById], references: [id], onDelete: Restrict)
+  journalEntry JournalEntry?            @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  allocations  DistributionAllocation[]
+  currencyRef  Currency                 @relation("DistributionCurrency", fields: [currency], references: [code], onDelete: Restrict)
+
+  @@index([organizationId, declaredDate])
+  @@map("distributions")
+}
+
+model DistributionAllocation {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  distributionId     String    @map("distribution_id") @db.Uuid
+  shareholderId      String    @map("shareholder_id") @db.Uuid
+  ownershipStakeId   String?   @map("ownership_stake_id") @db.Uuid
+  shareApplied       Decimal   @map("share_applied") @db.Decimal(12, 8) // snapshot of the share used
+  amount             Decimal   @db.Decimal(24, 8)
+  withholdingAmount  Decimal   @default(0) @map("withholding_amount") @db.Decimal(24, 8)
+  financialAccountId String?   @map("financial_account_id") @db.Uuid
+  paidAt             DateTime? @map("paid_at") @db.Timestamptz(6)
+  paymentReference   String?   @map("payment_reference")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  distribution     Distribution      @relation(fields: [distributionId], references: [id], onDelete: Restrict)
+  shareholder      Shareholder       @relation(fields: [shareholderId], references: [id], onDelete: Restrict)
+  ownershipStake   OwnershipStake?   @relation(fields: [ownershipStakeId], references: [id], onDelete: Restrict)
+  financialAccount FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+
+  @@unique([distributionId, shareholderId])
+  @@map("distribution_allocations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Append-only audit trail (UPDATE/DELETE blocked by trigger). Sensitive values (wallet details,
+/// full salaries for non-privileged viewers) must be redacted by the writer before insert.
+model AuditLog {
+  id             BigInt         @id @default(autoincrement())
+  organizationId String?        @map("organization_id") @db.Uuid
+  actorType      AuditActorType @map("actor_type")
+  actorUserId    String?        @map("actor_user_id") @db.Uuid
+  action         String // e.g. "payroll_run.approve", "journal_entry.post", "salary_condition.create"
+  entityType     String         @map("entity_type")
+  entityId       String?        @map("entity_id")
+  before         Json?
+  after          Json?
+  ipAddress      String?        @map("ip_address")
+  userAgent      String?        @map("user_agent")
+  requestId      String?        @map("request_id")
+  occurredAt     DateTime       @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor        AppUser?      @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, occurredAt])
+  @@index([entityType, entityId])
+  @@index([actorUserId, occurredAt])
+  @@map("audit_logs")
 }
