@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
-import { financialAlerts, type AlertInput, type PnlFigures } from "./diagnostics"
+import { financialAlerts, marginOpportunities, prioritizedRecommendations, type AlertInput, type PnlFigures } from "./diagnostics"
 
 const pnl = (revenue: number, cos: number, opex: number, other = 0): PnlFigures => {
   const gross = revenue - cos
@@ -139,5 +139,34 @@ describe("financialAlerts", () => {
     input.payrollByDepartment = [{ id: "d1", name: "Clipping", current: "50000", previous: "0" }]
     const c = codes(input)
     for (const code of ["revenue_decline", "opex_growth", "payroll_growth", "ebitda_margin_drop", "profit_decline", "department_profit_decline", "payroll_department_spike"] as const) assert.ok(!c.includes(code), code)
+  })
+})
+
+describe("prioritizedRecommendations", () => {
+  it("ranks urgent alerts first, then by calculated impact, each with an assumption and a KPI", () => {
+    const input = healthy()
+    input.current = pnl(85000, 34000, 38000) // revenue -13.3%, opex +31%
+    input.cash = { ...input.cash, overdueReceivables: "15000" }
+    input.departments = [{ id: "d1", name: "Clipping", revenue: "10000", netProfit: "-4000", previousNetProfit: "1000" }]
+    const alerts = financialAlerts(input)
+    const opportunities = marginOpportunities({ revenue: "85000", grossMarginPct: "60", totalExpenses: "72000", expenses: [], clients: [], departments: [{ id: "d1", name: "Clipping", revenue: "10000", netProfit: "-4000" }], previousHasData: true })
+    const recs = prioritizedRecommendations(alerts, opportunities, "60")
+    assert.deepEqual(recs.map((r) => [r.priority, r.source.code, r.impact?.amount ?? null]), [
+      [1, "opex_growth", "9000"],
+      [2, "profit_decline", "17000"], // net profit 13,000 vs 30,000
+      [3, "overdue_receivables", "15000"],
+      [4, "revenue_decline", "7800"], // 13,000 lost revenue x 60% gross margin
+      [5, "unprofitable_department", "4000"],
+      [6, "ebitda_margin_drop", null],
+      [7, "client_concentration", null],
+    ])
+    const opex = recs[0]
+    assert.equal(opex.severity, "high")
+    assert.deepEqual(opex.kpi, { metric: "operatingExpenses", unit: "money", current: "38000", target: "29000" })
+    assert.equal(opex.assumption, "restore_previous")
+    assert.match(opex.assumptionText, /previous-period level/)
+    assert.equal(recs[2].impact!.kind, "cash")
+    assert.equal(recs[3].assumption, "at_gross_margin")
+    assert.ok(!recs.some((r) => r.source.code === "department_to_breakeven"), "the department appears once")
   })
 })

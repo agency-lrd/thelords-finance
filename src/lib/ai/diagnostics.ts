@@ -319,3 +319,124 @@ export function marginOpportunities(input: OpportunityInput): Opportunity[] {
 
   return out.sort((a, b) => D(b.estimatedImpact).cmp(a.estimatedImpact))
 }
+
+// ─── Prioritized recommendations ─────────────────────────────────────────────
+
+export type Assumption = "restore_previous" | "at_gross_margin" | "reach_budget" | "breakeven" | "partial_cut" | "collect_overdue" | "target_level" | "none"
+
+export const ASSUMPTIONS: Record<Assumption, string> = {
+  restore_previous: "The line returns to its previous-period level; everything else stays the same.",
+  at_gross_margin: "Recovered revenue converts to profit at the current gross margin.",
+  reach_budget: "The line comes back to its budget; everything else stays the same.",
+  breakeven: "The loss is eliminated (break-even); everything else stays the same.",
+  partial_cut: "A 10% reduction of the line is achieved without affecting revenue.",
+  collect_overdue: "Overdue customer payments are collected in full (cash effect, not profit).",
+  target_level: "The metric reaches the target level shown in the KPI.",
+  none: "The effect depends on the actions chosen; it is not quantified.",
+}
+
+export type Recommendation = {
+  priority: number
+  source: { kind: "alert" | "opportunity"; code: Alert["code"] | Opportunity["code"] }
+  severity: Alert["severity"]
+  subject?: { kind: "department" | "client" | "account"; id: string; name: string }
+  /** Expected effect for the period if the action succeeds (calculated, not a fact). */
+  impact: { kind: "profit" | "cash"; amount: string } | null
+  assumption: Assumption
+  assumptionText: string
+  kpi: { metric: string; unit: "money" | "pct" | "months" | "days"; current: string | number | null; target: string | number | null } | null
+}
+
+type Draft = Omit<Recommendation, "priority" | "assumptionText">
+
+const fact = (f: Alert["facts"], k: string) => (f[k] === undefined ? null : f[k])
+const diff = (a: unknown, b: unknown) => (a === null || b === null || a === undefined || b === undefined ? null : D(String(a)).sub(String(b)))
+const positive = (d: Decimal | null) => (d && d.isPositive() ? d.toDecimalPlaces(2).toString() : null)
+
+function fromAlert(a: Alert, grossMarginPct: string | null): Draft | null {
+  const f = a.facts
+  const base = { source: { kind: "alert" as const, code: a.code }, severity: a.severity, ...(a.subject ? { subject: a.subject } : {}) }
+  const money = (metric: string, current: unknown, target: unknown) => ({ metric, unit: "money" as const, current: current as string | null, target: target as string | null })
+  const profit = (amount: string | null) => (amount ? { kind: "profit" as const, amount } : null)
+  const atMargin = (gapAmount: Decimal | null) => (gapAmount && grossMarginPct !== null ? profit(positive(gapAmount.mul(grossMarginPct).div(100))) : null)
+  switch (a.code) {
+    case "revenue_decline":
+      return { ...base, impact: atMargin(diff(fact(f, "previousRevenue"), fact(f, "revenue"))), assumption: "at_gross_margin", kpi: money("revenue", fact(f, "revenue"), fact(f, "previousRevenue")) }
+    case "budget_revenue_shortfall":
+      return { ...base, impact: atMargin(diff(fact(f, "budget"), fact(f, "revenue"))), assumption: "at_gross_margin", kpi: money("revenue", fact(f, "revenue"), fact(f, "budget")) }
+    case "opex_growth":
+      return { ...base, impact: profit(positive(diff(fact(f, "operatingExpenses"), fact(f, "previous")))), assumption: "restore_previous", kpi: money("operatingExpenses", fact(f, "operatingExpenses"), fact(f, "previous")) }
+    case "payroll_growth":
+    case "payroll_department_spike":
+      return { ...base, impact: profit(positive(diff(fact(f, "payroll"), fact(f, "previous")))), assumption: "restore_previous", kpi: money("payroll", fact(f, "payroll"), fact(f, "previous")) }
+    case "profit_decline":
+    case "department_profit_decline":
+      return { ...base, impact: profit(positive(diff(fact(f, "previous"), fact(f, "netProfit")))), assumption: "restore_previous", kpi: money("netProfit", fact(f, "netProfit"), fact(f, "previous")) }
+    case "budget_cost_overrun":
+      return { ...base, impact: profit(positive(diff(fact(f, "actual"), fact(f, "budget")))), assumption: "reach_budget", kpi: money(String(fact(f, "metric")), fact(f, "actual"), fact(f, "budget")) }
+    case "budget_payroll_overrun":
+      return { ...base, impact: profit(positive(diff(fact(f, "payroll"), fact(f, "budget")))), assumption: "reach_budget", kpi: money("payroll", fact(f, "payroll"), fact(f, "budget")) }
+    case "negative_gross_margin":
+      return { ...base, impact: profit(positive(D(String(f.grossProfit)).neg())), assumption: "breakeven", kpi: money("grossProfit", fact(f, "grossProfit"), "0") }
+    case "negative_ebitda":
+      return { ...base, impact: profit(positive(D(String(f.ebitda)).neg())), assumption: "breakeven", kpi: money("ebitda", fact(f, "ebitda"), "0") }
+    case "net_loss":
+    case "unprofitable_department":
+      return { ...base, impact: profit(positive(D(String(f.netProfit)).neg())), assumption: "breakeven", kpi: money("netProfit", fact(f, "netProfit"), "0") }
+    case "ebitda_margin_drop":
+      return { ...base, impact: null, assumption: "target_level", kpi: { metric: "ebitdaMarginPct", unit: "pct", current: fact(f, "ebitdaMarginPct") as string | null, target: fact(f, "previousPct") as string | null } }
+    case "overdue_receivables":
+      return { ...base, impact: { kind: "cash", amount: String(f.overdueReceivables) }, assumption: "collect_overdue", kpi: money("overdueReceivables", fact(f, "overdueReceivables"), "0") }
+    case "high_receivables": {
+      const dso = Number(f.daysSalesOutstanding)
+      const freed = dso > 0 ? D(String(f.receivables)).mul(dso - THRESHOLDS.dsoDays).div(dso) : null
+      return { ...base, impact: freed && freed.isPositive() ? { kind: "cash", amount: freed.toDecimalPlaces(2).toString() } : null, assumption: "target_level", kpi: { metric: "daysSalesOutstanding", unit: "days", current: dso, target: THRESHOLDS.dsoDays } }
+    }
+    case "low_runway":
+      return { ...base, impact: null, assumption: "target_level", kpi: { metric: "runwayMonths", unit: "months", current: fact(f, "runwayMonths") as string | null, target: THRESHOLDS.runwayMonths.medium } }
+    case "below_cash_reserve":
+      return { ...base, impact: null, assumption: "target_level", kpi: money("cash", fact(f, "cash"), fact(f, "reserve")) }
+    case "obligations_exceed_cash":
+      return { ...base, impact: null, assumption: "target_level", kpi: money("cash", fact(f, "cash"), fact(f, "obligations")) }
+    case "overdue_payables":
+      return { ...base, impact: null, assumption: "target_level", kpi: money("overduePayables", fact(f, "overduePayables"), "0") }
+    case "client_concentration":
+      return { ...base, impact: null, assumption: "target_level", kpi: { metric: "topClientSharePct", unit: "pct", current: fact(f, "topClientSharePct") as number | null, target: THRESHOLDS.concentration.top1Medium } }
+    case "negative_cash_forecast":
+      return { ...base, impact: null, assumption: "none", kpi: null }
+  }
+}
+
+function fromOpportunity(o: Opportunity): Draft {
+  const base = { source: { kind: "opportunity" as const, code: o.code }, severity: "medium" as const, subject: o.subject, impact: { kind: "profit" as const, amount: o.estimatedImpact } }
+  switch (o.code) {
+    case "expense_back_to_previous":
+      return { ...base, assumption: "restore_previous", kpi: { metric: "expenseLine", unit: "money", current: o.facts.current as string, target: o.facts.previous as string } }
+    case "low_margin_client":
+      return { ...base, assumption: "target_level", kpi: { metric: "contributionMarginPct", unit: "pct", current: o.facts.contributionMarginPct as number, target: o.facts.companyGrossMarginPct as number } }
+    case "department_to_breakeven":
+      return { ...base, assumption: "breakeven", kpi: { metric: "netProfit", unit: "money", current: o.facts.netProfit as string, target: "0" } }
+    case "large_cost_line":
+      return { ...base, severity: "low", assumption: "partial_cut", kpi: { metric: "expenseLine", unit: "money", current: o.facts.current as string, target: D(String(o.facts.current)).mul(0.9).toDecimalPlaces(2).toString() } }
+  }
+}
+
+/**
+ * Actions ranked by urgency, then by calculated impact. Each one has the KPI that shows progress and the
+ * assumption behind its impact. Effects can overlap (a profit decline includes the cost growth behind it),
+ * so they are not additive. Duplicates (a loss-making department found both as an alert and an
+ * opportunity) appear once.
+ */
+export function prioritizedRecommendations(alerts: Alert[], opportunities: Opportunity[], grossMarginPct: string | null, limit = 8): Recommendation[] {
+  const drafts = alerts.map((a) => fromAlert(a, grossMarginPct)).filter((d): d is Draft => d !== null)
+  for (const o of opportunities) {
+    if (o.code === "department_to_breakeven" && drafts.some((d) => d.subject?.id === o.subject.id && d.source.code === "unprofitable_department")) continue
+    drafts.push(fromOpportunity(o))
+  }
+  const weight = { high: 0, medium: 1, low: 2 }
+  const amount = (d: Draft) => (d.impact ? D(d.impact.amount) : D(-1))
+  return drafts
+    .sort((a, b) => weight[a.severity] - weight[b.severity] || amount(b).cmp(amount(a)))
+    .slice(0, limit)
+    .map((d, i) => ({ ...d, priority: i + 1, assumptionText: ASSUMPTIONS[d.assumption] }))
+}

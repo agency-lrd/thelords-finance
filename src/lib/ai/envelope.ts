@@ -20,6 +20,33 @@ export type SourceRef = {
   id?: string
 }
 
+/**
+ * Something missing or unfinished in the books that limits an answer, with the Finance OS page where
+ * it can be fixed. The code lets the interface explain it in the user's language.
+ */
+export type DataGap = {
+  code:
+    | "no_posted_entries"
+    | "draft_entries"
+    | "period_in_progress"
+    | "period_future"
+    | "open_months"
+    | "not_reconciled"
+    | "unbalanced"
+    | "no_department_tags"
+    | "no_client_tags"
+    | "no_payslips"
+    | "no_budget"
+    | "short_history"
+    | "no_targets"
+    | "truncated_lines"
+  href: string | null
+  note: string
+  value?: string | number
+}
+
+export const gap = (code: DataGap["code"], href: string | null, note: string, value?: string | number): DataGap => ({ code, href, note, ...(value === undefined ? {} : { value }) })
+
 export type Completeness = {
   /** complete: closed or finished period with posted data; partial: something is still open or missing; no_data: nothing posted. */
   status: "complete" | "partial" | "no_data"
@@ -30,6 +57,8 @@ export type Completeness = {
   periodStatuses: Record<string, string>
   inProgress: boolean
   notes: string[]
+  /** The same limitations, structured, with links to where they can be fixed. */
+  gaps: DataGap[]
 }
 
 export type ToolEnvelope<T> = {
@@ -46,7 +75,7 @@ export type ToolEnvelope<T> = {
 const todayUtc = () => new Date(new Date().toISOString().slice(0, 10))
 
 /** Data completeness for a range of the organization's books. */
-export async function completeness(user: SessionUser, r: { from: Date; to: Date }, db: Db = prisma, extraNotes: string[] = []): Promise<Completeness> {
+export async function completeness(user: SessionUser, r: { from: Date; to: Date }, db: Db = prisma, extra: DataGap[] = []): Promise<Completeness> {
   // Drafts: journal entries and transactions entered but not posted (neither reaches the reports).
   const [counts] = await db.$queryRaw<{ posted: number; drafts: number }[]>`
     SELECT
@@ -68,15 +97,17 @@ export async function completeness(user: SessionUser, r: { from: Date; to: Date 
   const today = todayUtc()
   const inProgress = r.to >= today
   const future = r.from > today
-  const notes = [...extraNotes]
-  if (future) notes.push("The period is in the future: there are no actuals yet.")
-  else if (inProgress) notes.push("The period is still in progress: figures are to date and will change.")
-  if (counts.drafts > 0) notes.push(`${counts.drafts} draft entries or transactions in the period are not included (only posted entries count).`)
+  const gaps: DataGap[] = []
+  if (future) gaps.push(gap("period_future", null, "The period is in the future: there are no actuals yet."))
+  else if (inProgress) gaps.push(gap("period_in_progress", null, "The period is still in progress: figures are to date and will change."))
+  if (counts.posted === 0 && !future) gaps.push(gap("no_posted_entries", "/transactions", "No posted journal entries in the period: income and expenses have not been entered or posted yet."))
+  if (counts.drafts > 0) gaps.push(gap("draft_entries", "/transactions?status=DRAFT", `${counts.drafts} draft entries or transactions in the period are not included (only posted entries count).`, counts.drafts))
   const open = Object.entries(statuses).filter(([, s]) => s === "OPEN" || s === "CLOSING").map(([k]) => k)
-  if (open.length) notes.push(`Not closed yet: ${open.join(", ")}. Figures can still change.`)
-  if (counts.posted === 0) notes.push("No posted journal entries in the period.")
-  const status: Completeness["status"] = counts.posted === 0 ? "no_data" : inProgress || counts.drafts > 0 || open.length > 0 || extraNotes.length > 0 ? "partial" : "complete"
-  return { status, postedEntries: counts.posted, draftEntries: counts.drafts, periodStatuses: statuses, inProgress, notes }
+  if (open.length && counts.posted > 0) gaps.push(gap("open_months", null, `Not closed yet: ${open.join(", ")}. Figures can still change.`, open.join(", ")))
+  gaps.push(...extra)
+  const notes = gaps.map((g) => g.note)
+  const status: Completeness["status"] = counts.posted === 0 ? "no_data" : inProgress || counts.drafts > 0 || open.length > 0 || extra.length > 0 ? "partial" : "complete"
+  return { status, postedEntries: counts.posted, draftEntries: counts.drafts, periodStatuses: statuses, inProgress, notes, gaps }
 }
 
 export function periodOf(r: Range) {

@@ -20,14 +20,19 @@ describe("prompts", () => {
   it("the fixed system prompt has no dates or per-request values (cacheable)", () => {
     assert.ok(!/\d{4}-\d{2}-\d{2}/.test(SYSTEM_PROMPT))
     assert.match(SYSTEM_PROMPT, /read-only/)
+    assert.match(SYSTEM_PROMPT, /Russian by default/)
+    assert.match(SYSTEM_PROMPT, /Never mention tool names/)
     assert.match(SYSTEM_PROMPT, /data, not instructions/)
   })
   it("the context names period, department and what the role cannot see", () => {
-    const c = contextPrompt({ today: "2026-10-16", organizationName: "THE LORDS", baseCurrency: "USD", locale: "ru", role: "financial reports", period: "2026-09", department: "Clipping", focus: "costs", tools: [], unavailable: ["getPayrollSummary (needs payroll:read)"] })
+    const c = contextPrompt({ today: "2026-10-16", organizationName: "THE LORDS", baseCurrency: "USD", locale: "ru", role: "financial reports", period: "2026-09", department: "Clipping", focus: "costs", tools: [], unavailable: ["getPayrollSummary (needs payroll:read)"], books: "Posted entries from 2026-01-05 to 2026-10-12.", memory: "periods 2026-08, 2026-09 (most recent last)" })
     assert.match(c, /Selected period: 2026-09/)
     assert.match(c, /Selected department: Clipping/)
     assert.match(c, /Not available to this user's role: getPayrollSummary/)
     assert.match(c, /Interface language: Russian/)
+    assert.match(c, /Books: Posted entries from 2026-01-05/)
+    assert.match(c, /Discussed so far in this conversation: periods 2026-08, 2026-09/)
+    assert.match(c, /\/transactions/)
   })
 })
 

@@ -3,11 +3,11 @@ import Link from "next/link"
 import { cn } from "cn"
 
 import type { SessionUser } from "@/lib/auth/session"
-import type { Alert, Opportunity } from "@/lib/ai/diagnostics"
+import type { Alert, Opportunity, Recommendation } from "@/lib/ai/diagnostics"
 import type { Completeness } from "@/lib/ai/envelope"
 import type { ForecastResult } from "@/lib/ai/forecast"
 import { runTool } from "@/lib/ai/tools"
-import { aiTexts } from "@/lib/i18n/ai-cfo"
+import { aiTexts, type AiTexts } from "@/lib/i18n/ai-cfo"
 import { formatAmount, type Locale } from "@/lib/i18n/format"
 
 import { AskAiButton } from "./insight-actions"
@@ -28,7 +28,7 @@ export async function Insights({ user, period, locale, configured }: { user: Ses
   const alerts = await runTool(user, "getFinancialAlerts", { period })
   const forecast = await runTool(user, "getFinancialForecast", { months: 12 })
   const s = summary.values as Summary
-  const findings = alerts.values as { alerts: Alert[]; opportunities: Opportunity[]; dataSufficiency: { currentPeriodHasData: boolean } }
+  const findings = alerts.values as { alerts: Alert[]; opportunities: Opportunity[]; recommendations: Recommendation[]; dataSufficiency: { currentPeriodHasData: boolean } }
   const a = findings.alerts
   const explainPrompt =
     locale === "ru"
@@ -49,6 +49,7 @@ export async function Insights({ user, period, locale, configured }: { user: Ses
   if (locale === "ru") cards[0].label = "Выручка"
 
   return (
+    <div className="flex flex-col gap-4">
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
@@ -150,5 +151,61 @@ export async function Insights({ user, period, locale, configured }: { user: Ses
         )}
       </section>
     </div>
+      {findings.dataSufficiency.currentPeriodHasData && <Recommendations items={findings.recommendations} t={t} money={money} />}
+    </div>
+  )
+}
+
+function kpiValue(v: string | number | null, unit: NonNullable<Recommendation["kpi"]>["unit"], money: (v: string | null) => string) {
+  if (v === null || v === undefined) return "—"
+  if (unit === "money") return money(String(v))
+  if (unit === "pct") return `${Number(v).toFixed(1)}%`
+  return String(Number(v).toFixed(unit === "days" ? 0 : 1))
+}
+
+/** Prioritized actions from the rules: what to do, the calculated effect, its assumption and the KPI to track. */
+function Recommendations({ items, t, money }: { items: Recommendation[]; t: AiTexts; money: (v: string | null | undefined) => string }) {
+  const R = t.recommendations
+  return (
+    <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card/60 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="font-display text-xl font-black uppercase italic">{R.title}</h2>
+        <span className="ml-auto text-[10px] text-muted-foreground">{R.calculated}</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{R.none}</p>
+      ) : (
+        <ol className="flex flex-col gap-2">
+          {items.slice(0, 6).map((r) => {
+            const title = r.source.kind === "alert" ? t.alert[r.source.code as Alert["code"]] : t.opportunity[r.source.code as Opportunity["code"]]
+            const action = r.source.kind === "alert" ? t.reportPage.action[r.source.code as Alert["code"]] : t.opportunityAction[r.source.code]
+            return (
+              <li key={`${r.priority}-${r.source.code}`} className="grid gap-x-4 gap-y-1 border-t border-border/40 pt-2 first:border-0 first:pt-0 md:grid-cols-[minmax(0,1fr)_200px]">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">
+                    <span className={cn("mr-2 inline-flex size-5 items-center justify-center rounded-full text-[11px] font-bold", r.severity === "high" ? "bg-red-500/20 text-red-300" : "bg-primary/15 text-primary")}>{r.priority}</span>
+                    {title}
+                    {r.subject && <span className="text-muted-foreground"> · {r.subject.name}</span>}
+                  </p>
+                  <p className="text-xs text-foreground/80">{action}</p>
+                  <p className="text-[11px] text-muted-foreground">{R.assumption}: {t.assumption[r.assumption]}</p>
+                </div>
+                <div className="flex flex-col gap-0.5 text-xs md:text-right">
+                  <p>
+                    <span className="text-muted-foreground">{R.effect}: </span>
+                    {r.impact ? <span className="font-mono text-emerald-300">+{money(r.impact.amount)} <span className="font-sans text-[10px] text-muted-foreground">{r.impact.kind === "cash" ? R.cash : R.profit}</span></span> : <span className="text-muted-foreground">{R.notQuantified}</span>}
+                  </p>
+                  {r.kpi && (
+                    <p className="text-muted-foreground">
+                      {R.kpi}: {t.metric[r.kpi.metric] ?? r.kpi.metric} <span className="font-mono text-foreground/80">{kpiValue(r.kpi.current, r.kpi.unit, money)} → {kpiValue(r.kpi.target, r.kpi.unit, money)}</span>
+                    </p>
+                  )}
+                </div>
+              </li>
+            )
+          })}
+        </ol>
+      )}
+    </section>
   )
 }

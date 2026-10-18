@@ -68,12 +68,12 @@ organization, RLS is on and the browser roles have no privileges. It changes no 
 
 | Suite | Checks | What it covers |
 | --- | --- | --- |
-| `test:unit` | 67 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; target gaps and what-if; margin opportunities; follow-up parsing; cost estimates |
+| `test:unit` | 68 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; target gaps and what-if; margin opportunities; prioritized recommendations; follow-up parsing; cost estimates |
 | `db:test` | 137 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
 | `test:sheet` | 23 | End-to-end payroll and project income/costs |
 | `test:reports` | 16 | Every transaction type; drafts excluded; balanced entries; P&L; cash flow reconciliation; balance sheet; reversal; drill-down; EUR conversion; payroll integration; quarter/year totals; owner distributions; budgets; permissions |
 | `test:vault` | 9 | Access register sharing, history and the secret guard |
-| `test:ai` | 21 | Every AI tool's result envelope; figures equal the reports; completeness; strict input validation; no write tools; findings and opportunities with the no-data guard; targets (permission, audit, gap, what-if); role permissions; organization isolation; chat loop with a scripted model (tool calls, errors, refusal, round and spending limits, rate limits, attachments, history); private conversations; append-only chat tables |
+| `test:ai` | 24 | Every AI tool's result envelope; figures equal the reports; completeness; strict input validation; no write tools; findings, opportunities and prioritized actions with the no-data guard; data-gap links; onboarding status; conversation memory; targets (permission, audit, gap, what-if); role permissions; organization isolation; chat loop with a scripted model (tool calls, errors, refusal, round and spending limits, rate limits, attachments, history); private conversations; append-only chat tables |
 
 All integration tests run on a throwaway PGlite database; nothing is ever written to production, and the
 AI tests never call the AI provider.

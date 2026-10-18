@@ -14,6 +14,7 @@ import type { Completeness, SourceRef, ToolEnvelope } from "./envelope"
 import { checkLimits, remainingBudget, usageSnapshot, type LimitBlock } from "./limits"
 import { contextPrompt, splitFollowUps, SYSTEM_PROMPT } from "./prompt"
 import { Anthropic, FALLBACK, type ModelCall } from "./provider"
+import { booksContext, booksStatus } from "./onboarding"
 import { assertDepartment } from "./queries"
 import { FINANCIAL_TOOLS, runTool, ToolDenied, toolInputSchema, toolsFor } from "./tools"
 
@@ -59,7 +60,7 @@ export type ToolEvent = {
   attachment?: boolean
   period?: ToolEnvelope<unknown>["period"]
   nature?: ToolEnvelope<unknown>["nature"]
-  completeness?: Pick<Completeness, "status" | "notes">
+  completeness?: Pick<Completeness, "status" | "notes" | "gaps">
   sources?: SourceRef[]
   error?: string
 }
@@ -98,6 +99,35 @@ export function toolsNote(tools: unknown) {
     .filter((t) => typeof t.name === "string" && t.status === "done")
     .map((t) => `${t.name}(${JSON.stringify(t.input ?? {}).slice(0, 120)})`)
   return calls.length ? `\n\n[Calculations used for this answer: ${calls.slice(0, 12).join(", ")}]` : ""
+}
+
+/**
+ * What the conversation has covered so far, from the calculations of earlier answers (inputs only):
+ * the periods and departments looked at and the last calculations, so short follow-ups resolve correctly.
+ */
+export function conversationMemory(rows: { role: "USER" | "ASSISTANT"; tools?: unknown }[], departmentNames: Map<string, string>) {
+  const periods: string[] = []
+  const departments: string[] = []
+  let lastCalcs: string[] = []
+  for (const r of rows) {
+    if (r.role !== "ASSISTANT" || !Array.isArray(r.tools)) continue
+    const calls = (r.tools as { name?: unknown; input?: unknown; status?: unknown }[]).filter((t) => t.status === "done" && typeof t.name === "string")
+    if (calls.length) lastCalcs = calls.map((t) => t.name as string)
+    for (const t of calls) {
+      const input = (t.input ?? {}) as Record<string, unknown>
+      for (const k of ["period", "end_month", "date"]) if (typeof input[k] === "string") periods.push(input[k] as string)
+      if (typeof input.department_id === "string") departments.push(departmentNames.get(input.department_id) ?? input.department_id)
+    }
+  }
+  const last = (xs: string[], n: number) => [...new Set(xs.reverse())].slice(0, n).reverse()
+  if (!periods.length && !departments.length && !lastCalcs.length) return null
+  return [
+    periods.length ? `periods ${last(periods, 4).join(", ")} (most recent last)` : null,
+    departments.length ? `departments ${last(departments, 3).join(", ")}` : null,
+    lastCalcs.length ? `last answer used ${[...new Set(lastCalcs)].join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join("; ")
 }
 
 /** Text-only history in strict user/assistant alternation, starting with the user. */
@@ -174,7 +204,11 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
     take: limits.historyMessages,
     select: { role: true, content: true, status: true, tools: true },
   })
-  const history = historyMessages(previousRows.reverse())
+  const ordered = previousRows.reverse()
+  const history = historyMessages(ordered)
+  const orgDepartments = await db.department.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true } })
+  const memory = conversationMemory(ordered, new Map(orgDepartments.map((d) => [d.id, d.name])))
+  const books = booksContext(await booksStatus(user, db))
   await db.aiMessage.create({ data: { conversationId: conversation.id, organizationId: user.organizationId, userId: user.id, role: "USER", content: request.message } })
 
   const toolLog: ToolEvent[] = []
@@ -206,6 +240,8 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
         focus: request.focus ?? null,
         tools: allowed.map((t) => t.name),
         unavailable: FINANCIAL_TOOLS.filter((t) => !allowed.includes(t)).map((t) => `${t.name} (needs ${t.permission})`),
+        books,
+        memory,
       }),
     },
   ]
@@ -353,7 +389,7 @@ async function executeTool(user: SessionUser, db: Db, conversationId: string, id
   let ok = true
   try {
     const result = await runTool(user, name, input, db)
-    Object.assign(event, { status: "done", period: result.period, nature: result.nature, completeness: { status: result.completeness.status, notes: result.completeness.notes }, sources: result.sources })
+    Object.assign(event, { status: "done", period: result.period, nature: result.nature, completeness: { status: result.completeness.status, notes: result.completeness.notes, gaps: result.completeness.gaps }, sources: result.sources })
     content = toolResultContent(result)
   } catch (err) {
     ok = false

@@ -57,6 +57,18 @@ async function main() {
     const add = (input: Omit<Partial<Input>, "amount"> & { type: Input["type"]; amount: string; date: Date }, post = true) =>
       tx.createTransaction(admin, { ...base, description: input.type, ...input, amount: new Decimal(input.amount) } as Input, { post }, prisma)
 
+    await step("onboarding: empty books are reported as empty, with the pages to fill in", async () => {
+      const { booksStatus, booksContext } = await import("../src/lib/ai/onboarding")
+      const status = await booksStatus(admin, prisma)
+      assert.equal(status.empty, true)
+      assert.equal(status.steps.find((x) => x.key === "transactions")!.href, "/transactions")
+      assert.ok(status.steps.find((x) => x.key === "departments")!.done, "seeded departments exist")
+      assert.match(booksContext(status), /no posted entries yet.*do not present zeros/)
+      const f = (await tools.runTool(admin, "getFinancialAlerts", {}, prisma)).values as { dataSufficiency: { currentPeriodHasData: boolean }; recommendations: unknown[] }
+      assert.equal(f.dataSufficiency.currentPeriodHasData, false)
+      assert.deepEqual(f.recommendations, [])
+    })
+
     await step("seed: four complete months and the current month of fictional business", async () => {
       await add({ type: "OWNER_CONTRIBUTION", amount: "20000", date: day(months[0], 1), shareholderId: (await prisma.shareholder.create({ data: { organizationId: org.id, type: "INDIVIDUAL", name: "Owner Test" } })).id })
       const revenue = ["10000", "11000", "12000", "9000"]
@@ -111,6 +123,21 @@ async function main() {
       assert.equal(e.comparison.difference, "-6100")
       assert.equal(e.drivers.reduce((a, d) => a + Number(d.profitEffect), 0), -6100, "drivers add up to the change")
       assert.ok(e.drivers[0].account.length > 0)
+    })
+
+    await step("data gaps name what is missing and link to the page where it is entered", async () => {
+      const { booksStatus } = await import("../src/lib/ai/onboarding")
+      const status = await booksStatus(admin, prisma)
+      assert.equal(status.empty, false)
+      assert.equal(status.firstEntry, months[0].from.toISOString().slice(0, 10))
+      const empty = (await tools.runTool(admin, "getProfitAndLoss", { period: "2001-01" }, prisma)).completeness.gaps
+      assert.deepEqual(empty.map((g) => [g.code, g.href]), [["no_posted_entries", "/transactions"]])
+      const drafts = (await tools.runTool(admin, "getProfitAndLoss", { period: last.key }, prisma)).completeness.gaps
+      assert.ok(drafts.some((g) => g.code === "draft_entries" && g.href === "/transactions?status=DRAFT" && g.value === 1))
+      const noBudget = (await tools.runTool(admin, "getBudgetVariance", { period: months[0].key }, prisma)).completeness.gaps
+      assert.ok(noBudget.some((g) => g.code === "no_budget" && g.href === `/budgets?year=${months[0].year}&scenario=BASE`))
+      const targetsGap = (await tools.runTool(admin, "getTargetGapAnalysis", {}, prisma)).completeness.gaps
+      assert.ok(targetsGap.some((g) => g.code === "no_targets" && g.href === "/ai-cfo#targets"))
     })
 
     await step("completeness: drafts, open months and the month in progress are reported", async () => {
@@ -168,6 +195,10 @@ async function main() {
       assert.deepEqual(f.dataSufficiency, { currentPeriodHasData: true, previousPeriodHasData: true, previousPeriod: months[2].key })
       assert.ok(f.opportunities.some((o) => o.code === "department_to_breakeven" && o.subject.name === deptB.name && o.estimatedImpact === "1500"))
       assert.ok(f.opportunities.some((o) => o.code === "expense_back_to_previous" && o.estimatedImpact === "3100")) // software 6,100 vs 3,000
+      const recs = ((await tools.runTool(admin, "getFinancialAlerts", { period: last.key }, prisma)).values as { recommendations: { priority: number; source: { code: string }; kpi: unknown; assumptionText: string }[] }).recommendations
+      assert.deepEqual(recs.map((r) => r.priority), recs.map((_, i) => i + 1))
+      assert.ok(recs.length > 0 && recs.every((r) => r.assumptionText.length > 0))
+      assert.ok(recs.some((r) => r.source.code === "opex_growth" && r.kpi !== null))
       const empty = (await tools.runTool(admin, "getFinancialAlerts", { period: "2001-01" }, prisma)).values as { dataSufficiency: { currentPeriodHasData: boolean }; alerts: unknown[]; opportunities: unknown[] }
       assert.equal(empty.dataSufficiency.currentPeriodHasData, false)
       assert.deepEqual([empty.alerts, empty.opportunities], [[], []])
@@ -294,6 +325,7 @@ async function main() {
       assert.ok(answer.content.startsWith("Смотрю данные."))
       assert.deepEqual(answer.tools.map((t) => [t.name, t.status]), [["getFinancialSummary", "done"], ["getEBITDA", "done"]])
       assert.ok(answer.tools[0].sources!.some((s) => s.href.startsWith("/pnl")))
+      assert.ok(answer.tools[0].completeness!.gaps.some((g) => g.code === "draft_entries"), "gaps reach the interface")
       const audits = await prisma.auditLog.findMany({ where: { entityId: conversationId }, orderBy: { id: "asc" } })
       assert.deepEqual(audits.map((a) => a.action), ["ai_cfo.tool", "ai_cfo.tool", "ai_cfo.answer"])
       assert.equal(audits[0].actorUserId, admin.id)
@@ -307,6 +339,9 @@ async function main() {
       assert.equal(msgs[0].content, "Проанализируй текущий месяц")
       assert.ok(String(msgs[1].content).includes("EBITDA"))
       // The earlier answer carries a note of the calculations it used (inputs only, no results).
+      const context = (calls[0].system as { text: string }[])[1].text
+      assert.match(context, new RegExp(`Discussed so far in this conversation: periods ${last.key}`))
+      assert.match(context, /Books: Posted entries from/)
       assert.match(String(msgs[1].content), /\[Calculations used for this answer: getFinancialSummary\(\{"period":"\d{4}-\d{2}"\}\), getEBITDA/)
     })
 

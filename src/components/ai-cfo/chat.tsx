@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowUp, Calculator, ExternalLink, FileText, Loader2, MessageSquarePlus, Paperclip, Square, Trash2, TriangleAlert } from "lucide-react"
+import { ArrowUp, Calculator, ChevronRight, ExternalLink, FileText, Loader2, MessageSquarePlus, Paperclip, Square, Trash2, TriangleAlert } from "lucide-react"
 import Link from "next/link"
 import { useEffect, useRef, useState } from "react"
 import { cn } from "cn"
@@ -8,7 +8,7 @@ import { cn } from "cn"
 import { archiveConversationAction, loadConversationAction } from "@/app/(app)/ai-cfo/actions"
 import { Select, Textarea } from "@/components/ui/form-controls"
 import type { ChatEvent, StopReason, ToolEvent } from "@/lib/ai/chat"
-import type { SourceRef } from "@/lib/ai/envelope"
+import type { DataGap, SourceRef } from "@/lib/ai/envelope"
 import { aiTexts, type AiTexts } from "@/lib/i18n/ai-cfo"
 import { useI18n } from "@/lib/i18n/client"
 
@@ -47,57 +47,113 @@ function dedupeSources(tools: ToolEvent[]) {
   return out
 }
 
-function ToolChips({ tools, t }: { tools: ToolEvent[]; t: AiTexts }) {
-  if (!tools.length) return null
+const periodText = (p: ToolEvent["period"]) => (!p ? "" : "key" in p ? p.key.replace("..", " – ") : p.asOf)
+
+/** Localized source label: report names are translated, records (accounts, clients, departments) keep their names. */
+function sourceLabel(s: SourceRef, t: AiTexts) {
+  if (t.sourceLabel[s.label]) return t.sourceLabel[s.label]
+  const m = /^(Budget|Monthly analytics) (\d{4})(.*)$/.exec(s.label)
+  if (m && Object.keys(t.sourceLabel).length) return `${m[1] === "Budget" ? "Бюджет" : "Аналитика"} ${m[2]}${m[3]}`
+  return s.label
+}
+
+function gapsOf(tools: ToolEvent[]) {
+  const seen = new Set<string>()
+  const out: DataGap[] = []
+  for (const tool of tools) for (const g of tool.completeness?.gaps ?? []) {
+    const k = `${g.code}|${g.href ?? ""}`
+    if (!seen.has(k)) {
+      seen.add(k)
+      out.push(g)
+    }
+  }
+  return out
+}
+
+/** While the answer is being prepared: which records are being looked at, in business words. */
+function Progress({ tools, t }: { tools: ToolEvent[]; t: AiTexts }) {
+  const shown = tools.filter((x) => !x.attachment || x.status === "running")
+  if (!shown.length) return <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> {t.chat.thinking}</p>
   return (
-    <div className="mb-2 flex flex-wrap gap-1.5">
-      {tools.map((tool) => (
-        <span
-          key={tool.id}
-          title={tool.error ?? tool.completeness?.notes.join(" ") ?? undefined}
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px]",
-            tool.status === "error" ? "border-red-400/40 text-red-300" : tool.status === "running" ? "border-primary/40 text-primary" : "border-border/70 text-muted-foreground",
-          )}
-        >
-          {tool.status === "running" ? <Loader2 className="size-3 animate-spin" /> : tool.attachment ? <Paperclip className="size-3" /> : <Calculator className="size-3" />}
-          {tool.name}
-          {tool.status === "error" && ` · ${t.chat.failed}`}
-          {tool.status === "done" && tool.nature === "forecast" && <span className="text-amber-300"> · {t.chat.forecast}</span>}
-          {tool.status === "done" && tool.completeness?.status === "partial" && <span className="text-amber-300"> · {t.chat.partial}</span>}
-          {tool.status === "done" && tool.completeness?.status === "no_data" && <span className="text-red-300"> · {t.chat.noData}</span>}
+    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      <Loader2 className="size-3.5 animate-spin text-primary" />
+      {t.working}:
+      {shown.map((x) => (
+        <span key={x.id} className={cn(x.status === "running" ? "text-foreground" : "opacity-70")}>
+          {t.calc[x.name] ?? t.chat.tools}
+          {periodText(x.period) && ` (${periodText(x.period)})`}
         </span>
       ))}
+    </p>
+  )
+}
+
+/** Data the answer needed but the books do not have yet, with links to where it is entered. */
+function MissingData({ tools, t }: { tools: ToolEvent[]; t: AiTexts }) {
+  const actionable = gapsOf(tools).filter((g) => g.href && t.gap[g.code]?.link)
+  if (!actionable.length) return null
+  return (
+    <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/5 p-3">
+      <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300"><TriangleAlert className="size-3.5" /> {t.missingTitle}</p>
+      <ul className="flex flex-col gap-1 text-sm">
+        {actionable.map((g) => (
+          <li key={`${g.code}|${g.href}`} className="flex flex-wrap items-baseline gap-x-2">
+            <span className="text-foreground/90">{t.gap[g.code].text}</span>
+            <Link href={g.href!} className="text-primary underline-offset-4 hover:underline">{t.gap[g.code].link} →</Link>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
 
-function Sources({ tools, t }: { tools: ToolEvent[]; t: AiTexts }) {
-  const sources = dedupeSources(tools)
-  const notes = [...new Set(tools.flatMap((x) => x.completeness?.notes ?? []))]
-  if (!sources.length && !notes.length) return null
+/** Sources, calculations and technical details, collapsed by default. */
+function Details({ tools, t }: { tools: ToolEvent[]; t: AiTexts }) {
+  const calcs = tools.filter((x) => x.status !== "running")
+  if (!calcs.length) return null
+  const sources = dedupeSources(calcs)
+  const notes = gapsOf(calcs).filter((g) => !(g.href && t.gap[g.code]?.link))
   return (
-    <div className="mt-3 rounded-xl border border-border/60 bg-background/40 p-3">
-      <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{t.chat.sources}</p>
-      <div className="flex flex-wrap gap-1.5">
-        {sources.slice(0, 16).map((s) => (
-          <Link key={`${s.href}|${s.label}`} href={s.href} className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary/60 hover:text-primary">
-            {s.label}
-            <ExternalLink className="size-3" />
-          </Link>
-        ))}
-      </div>
-      {notes.length > 0 && (
-        <ul className="mt-2 flex flex-col gap-0.5 text-[11px] text-amber-200/80">
-          {notes.slice(0, 5).map((n) => (
-            <li key={n} className="flex gap-1.5">
-              <TriangleAlert className="mt-0.5 size-3 shrink-0" />
-              {n}
+    <details className="group mt-3 rounded-xl border border-border/60 bg-background/40 text-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-muted-foreground hover:text-foreground">
+        <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+        {t.details} ({calcs.length})
+      </summary>
+      <div className="flex flex-col gap-2.5 border-t border-border/40 px-3 py-2.5">
+        <ul className="flex flex-col gap-0.5">
+          {calcs.map((x) => (
+            <li key={x.id} className="flex items-center gap-1.5 text-muted-foreground">
+              {x.status === "error" ? <TriangleAlert className="size-3 text-red-300" /> : x.attachment ? <Paperclip className="size-3" /> : <Calculator className="size-3" />}
+              <span className="text-foreground/80">{t.calc[x.name] ?? x.name}</span>
+              {periodText(x.period) && <span>· {periodText(x.period)}</span>}
+              {x.nature === "forecast" && <span className="text-amber-300">· {t.chat.forecast}</span>}
+              {x.status === "error" && <span className="text-red-300">· {t.chat.failed}</span>}
             </li>
           ))}
         </ul>
-      )}
-    </div>
+        {sources.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {sources.slice(0, 16).map((s) => (
+              <Link key={`${s.href}|${s.label}`} href={s.href} className="inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary/60 hover:text-primary">
+                {sourceLabel(s, t)}
+                <ExternalLink className="size-3" />
+              </Link>
+            ))}
+          </div>
+        )}
+        {notes.length > 0 && (
+          <ul className="flex flex-col gap-0.5 text-amber-200/80">
+            {notes.map((g) => <li key={g.code}>{t.gap[g.code]?.text ?? g.note}</li>)}
+          </ul>
+        )}
+        <details className="text-[11px] text-muted-foreground/70">
+          <summary className="cursor-pointer list-none hover:text-muted-foreground">{t.technical}</summary>
+          <ul className="mt-1 flex flex-col gap-0.5 font-mono">
+            {calcs.map((x) => <li key={x.id}>{x.name} {JSON.stringify(x.input ?? {})} → {x.status}{x.completeness ? ` (${x.completeness.status})` : ""}{x.error ? `: ${x.error}` : ""}</li>)}
+          </ul>
+        </details>
+      </div>
+    </details>
   )
 }
 
@@ -113,10 +169,11 @@ function MessageView({ m, t, onAsk, busy }: { m: Msg; t: AiTexts; onAsk: (q: str
   const notice = m.status === "TRUNCATED" && m.reason && m.reason in t.status.TRUNCATED ? t.status.TRUNCATED[m.reason as keyof AiTexts["status"]["TRUNCATED"]] : m.status === "REFUSED" ? t.status.REFUSED : m.status === "ERROR" ? (m.error ?? t.status.ERROR) : null
   return (
     <div className="flex flex-col rounded-2xl border border-border/60 bg-card/60 p-4">
-      <ToolChips tools={m.tools} t={t} />
-      {text ? <Markdown text={text} /> : m.status === "STREAMING" ? <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> {t.chat.thinking}</p> : null}
+      {m.status === "STREAMING" && <div className="mb-2"><Progress tools={m.tools} t={t} /></div>}
+      {text && <Markdown text={text} />}
       {notice && <p className="mt-2 flex items-center gap-2 text-xs text-amber-300"><TriangleAlert className="size-3.5" /> {notice}</p>}
-      {m.status !== "STREAMING" && <Sources tools={m.tools} t={t} />}
+      {m.status !== "STREAMING" && <MissingData tools={m.tools} t={t} />}
+      {m.status !== "STREAMING" && <Details tools={m.tools} t={t} />}
       {m.followUps.length > 0 && (
         <div className="mt-3 flex flex-col gap-1.5">
           <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{t.chat.followUps}</p>
@@ -138,6 +195,8 @@ export function AiChat(props: {
   period: string
   departments: { id: string; name: string }[]
   initialConversations: Conversation[]
+  /** No posted records yet: show getting-started prompts. */
+  empty?: boolean
 }) {
   const { locale } = useI18n()
   const t = aiTexts[locale]
@@ -307,7 +366,7 @@ export function AiChat(props: {
             <div className="flex flex-1 flex-col items-center justify-center gap-4 py-8 text-center">
               <p className="font-display text-xl font-black uppercase italic">{t.chat.welcome}</p>
               <div className="grid w-full max-w-3xl gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {t.prompts.map((p) => (
+                {(props.empty ? t.emptyPrompts : t.prompts).map((p) => (
                   <button key={p} type="button" disabled={!props.configured || busy} onClick={() => send(p)} className="rounded-xl border border-border bg-card/60 px-4 py-3 text-left text-sm hover:border-primary/60 hover:text-primary disabled:opacity-50">
                     {p}
                   </button>

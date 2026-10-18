@@ -102,6 +102,49 @@ and the rule that fired it. They cover:
 
 The insights panel on `/ai-cfo` shows these, and "Explain with AI" asks the chat to explain them.
 
+**Prioritized actions.** `getFinancialAlerts` also turns the alerts and opportunities into ranked actions
+(`prioritizedRecommendations`), most urgent first and then by calculated effect. Each action has:
+
+- the expected effect on profit or cash;
+- the assumption behind that effect;
+- a KPI to track, as current → target.
+
+Effects overlap (for example, a profit decline includes the cost growth behind it), so they are never
+added up. The insights panel shows them as "Приоритетные действия".
+
+**Missing data and onboarding.**
+
+- Every tool result lists its data gaps as codes with a link to the Finance OS page where the data is
+  entered. Examples:
+  - nothing posted → `/transactions`;
+  - drafts → `/transactions?status=DRAFT`;
+  - no budget → `/budgets?year=…`;
+  - no department or client tags;
+  - no payslips;
+  - short history;
+  - no targets.
+- The chat shows these gaps in Russian under "Не хватает данных", with links.
+- While the books have no posted entries, `/ai-cfo` shows a setup checklist instead of figures (accounts,
+  departments, clients, transactions, payroll, budget, targets). The chat offers getting-started prompts.
+  The AI is told never to present zeros as results.
+
+**Chat presentation.**
+
+- While an answer is being prepared, the chat shows in business words what it is looking at (for example
+  "Смотрю: P&L (2026-09)").
+- Calculations, source links and notes on data limits sit in a collapsed "Источники и расчёты" section.
+  Tool names and inputs are only inside its "Технические детали".
+- The AI writes in Russian by default and never mentions tool names or status codes. It separates
+  **Факт**, **Допущение** and **Рекомендация**, and gives actions as a table: priority, action, effect,
+  assumption, KPI.
+
+**Conversation memory.**
+
+- The server tells the AI which periods and departments the conversation has already covered, and which
+  calculations the last answer used. Short follow-ups ("а в прошлом месяце?", "а по отделам?") resolve to
+  the right period and topic.
+- It also tells the AI what exists in the books: the date range of posted entries and what is not set up.
+
 **Targets** (`src/lib/ai/targets.ts`, table `financial_targets`):
 
 - **What is stored:** monthly net profit, monthly revenue, EBITDA margin % and a cash reserve in months of

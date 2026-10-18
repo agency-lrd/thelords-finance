@@ -5,11 +5,13 @@ import { Suspense } from "react"
 
 import { AiChat } from "@/components/ai-cfo/chat"
 import { Insights } from "@/components/ai-cfo/insights"
+import { Onboarding } from "@/components/ai-cfo/onboarding"
 import { TargetsPanel } from "@/components/ai-cfo/targets"
 import { PeriodPicker } from "@/components/reports/period-picker"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { aiConfigured, aiLimits } from "@/lib/ai/config"
 import { listConversations, monthlyUsage } from "@/lib/ai/conversations"
+import { booksStatus } from "@/lib/ai/onboarding"
 import { requirePageAccess } from "@/lib/auth/session"
 import { prisma } from "@/lib/db"
 import { aiTexts } from "@/lib/i18n/ai-cfo"
@@ -39,6 +41,7 @@ async function AiCfo({ searchParams }: { searchParams: PageProps<"/ai-cfo">["sea
     await listConversations(user),
     await monthlyUsage(user),
   ]
+  const books = await booksStatus(user)
 
   return (
     <div className="flex flex-col gap-6">
@@ -65,15 +68,20 @@ async function AiCfo({ searchParams }: { searchParams: PageProps<"/ai-cfo">["sea
         </div>
       )}
 
-      <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl border border-border bg-card/30" />}>
-        <Insights user={user} period={period} locale={locale} configured={configured} />
-      </Suspense>
+      {books.empty ? (
+        <Onboarding status={books} locale={locale} />
+      ) : (
+        <>
+          <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl border border-border bg-card/30" />}>
+            <Insights user={user} period={period} locale={locale} configured={configured} />
+          </Suspense>
+          <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl border border-border bg-card/30" />}>
+            <TargetsPanel user={user} locale={locale} configured={configured} />
+          </Suspense>
+        </>
+      )}
 
-      <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl border border-border bg-card/30" />}>
-        <TargetsPanel user={user} locale={locale} configured={configured} />
-      </Suspense>
-
-      <AiChat key={period} configured={configured} period={period} departments={departments} initialConversations={conversations} />
+      <AiChat key={period} empty={books.empty} configured={configured} period={period} departments={departments} initialConversations={conversations} />
       {configured && (
         <p className="text-[11px] text-muted-foreground">
           {t.chat.usage}: {locale === "ru" ? "вы" : "you"} ${usage.userUsd.toFixed(2)} ({locale === "ru" ? "лимит" : "limit"} ${limits.userDailyUsd.toFixed(0)}/{locale === "ru" ? "день" : "day"}) · {locale === "ru" ? "компания" : "company"} ${usage.orgUsd.toFixed(2)} / ${limits.orgMonthlyUsd.toFixed(0)} · {limits.model}
