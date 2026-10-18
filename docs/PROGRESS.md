@@ -1,6 +1,6 @@
 # THE LORDS Finance OS: progress
 
-Last updated: AI CFO release (migration 20261019090000_ai_cfo)
+Last updated: AI CFO targets and insights (migration 20261020090000_financial_targets)
 
 ## Status
 
@@ -54,12 +54,12 @@ Last updated: AI CFO release (migration 20261019090000_ai_cfo)
 | `/categories` | Income and expense categories, subcategories, and the P&L line each one maps to; new P&L lines; archive |
 | `/accounts`, `/departments`, `/employees` | Unchanged from earlier sessions |
 | `/vault` Пароли | Credential access register: service, login URL, username, department, category, responsible employee, access level, notes, link to the item in Bitwarden/1Password. Sharing is explicit per entry (Owner and Super Admin see everything; department membership grants nothing). History of views, copies, changes and shares; refuses text that looks like a secret; browser-only password generator. **No passwords are stored**; see `docs/SECURITY-VAULT.md` |
-| `/ai-cfo` | AI CFO: key figures, rule-based risk alerts and a 3-scenario forecast (calculated, no AI); streaming chat with Claude that answers only through 16 read-only financial tools, shows the calculations and source links, and suggests follow-ups. Period, department, focus and attached reports as context; private chat history. Shows a configuration notice and disables the chat when no provider key is set |
+| `/ai-cfo` | AI CFO: key figures, rule-based risk alerts and a 3-scenario forecast (calculated, no AI); risk findings and margin opportunities with "Explain with AI"; business targets with gap analysis and "Build a plan with AI"; streaming chat with Claude that answers only through 18 read-only financial tools, shows the calculations and source links, and suggests follow-ups. Period, department, focus and attached reports as context; private chat history. Shows a configuration notice and disables the chat when no provider key is set |
 | `/ai-cfo/report` | Monthly CFO report in 10 sections from the same tools, rule-based recommended actions, optional AI commentary; PDF export through the browser's print dialog |
 
 ## Database
 
-Nine migrations, all additive. The latest, `20261019090000_ai_cfo`, adds the private AI chat history
+Ten migrations, all additive. The latest, `20261020090000_financial_targets`, adds one row of business targets per organization (RLS on, no browser access). Before it, `20261019090000_ai_cfo` added the private AI chat history
 (`ai_conversations`, `ai_messages` with token usage and estimated cost). Messages are append-only,
 conversations cannot be deleted (only hidden), a message must belong to its conversation's user and
 organization, RLS is on and the browser roles have no privileges. It changes no existing table.
@@ -68,12 +68,12 @@ organization, RLS is on and the browser roles have no privileges. It changes no 
 
 | Suite | Checks | What it covers |
 | --- | --- | --- |
-| `test:unit` | 57 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; follow-up parsing; cost estimates |
-| `db:test` | 136 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
+| `test:unit` | 67 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; target gaps and what-if; margin opportunities; follow-up parsing; cost estimates |
+| `db:test` | 137 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
 | `test:sheet` | 23 | End-to-end payroll and project income/costs |
 | `test:reports` | 16 | Every transaction type; drafts excluded; balanced entries; P&L; cash flow reconciliation; balance sheet; reversal; drill-down; EUR conversion; payroll integration; quarter/year totals; owner distributions; budgets; permissions |
 | `test:vault` | 9 | Access register sharing, history and the secret guard |
-| `test:ai` | 19 | Every AI tool's result envelope; figures equal the reports; completeness; strict input validation; no write tools; role permissions; organization isolation; chat loop with a scripted model (tool calls, errors, refusal, round and spending limits, rate limits, attachments, history); private conversations; append-only chat tables |
+| `test:ai` | 21 | Every AI tool's result envelope; figures equal the reports; completeness; strict input validation; no write tools; findings and opportunities with the no-data guard; targets (permission, audit, gap, what-if); role permissions; organization isolation; chat loop with a scripted model (tool calls, errors, refusal, round and spending limits, rate limits, attachments, history); private conversations; append-only chat tables |
 
 All integration tests run on a throwaway PGlite database; nothing is ever written to production, and the
 AI tests never call the AI provider.

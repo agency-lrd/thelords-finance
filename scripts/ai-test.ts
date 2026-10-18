@@ -82,8 +82,10 @@ async function main() {
         getOwnerDistributions: {},
         getMonthlyFinancialTrends: { end_month: last.key, months: 4 },
         getFinancialForecast: { months: 12 },
+        getTargetGapAnalysis: { net_profit_monthly: 10000 },
+        evaluateScenario: { revenue_change_pct: 10 },
       }
-      assert.equal(tools.FINANCIAL_TOOLS.length, 16)
+      assert.equal(tools.FINANCIAL_TOOLS.length, 18)
       for (const t of tools.FINANCIAL_TOOLS) {
         const r = await tools.runTool(admin, t.name, inputs[t.name] ?? { period: last.key }, prisma)
         assert.equal(r.tool, t.name)
@@ -157,7 +159,49 @@ async function main() {
 
     await step("there are no write tools", async () => {
       const names = tools.FINANCIAL_TOOLS.map((t) => t.name)
-      assert.ok(names.every((n) => n.startsWith("get")), names.join(","))
+      assert.ok(names.every((n) => /^(get|evaluate)[A-Z]/.test(n)), names.join(","))
+      assert.ok(!names.some((n) => /set|create|update|delete|approve|transfer|pay|post|save/i.test(n.replace(/^get|Payroll/g, ""))), names.join(","))
+    })
+
+    await step("findings: opportunities with calculated impact, and nothing invented without data", async () => {
+      const f = (await tools.runTool(admin, "getFinancialAlerts", { period: last.key }, prisma)).values as { dataSufficiency: { currentPeriodHasData: boolean; previousPeriodHasData: boolean }; opportunities: { code: string; subject: { name: string }; estimatedImpact: string }[] }
+      assert.deepEqual(f.dataSufficiency, { currentPeriodHasData: true, previousPeriodHasData: true, previousPeriod: months[2].key })
+      assert.ok(f.opportunities.some((o) => o.code === "department_to_breakeven" && o.subject.name === deptB.name && o.estimatedImpact === "1500"))
+      assert.ok(f.opportunities.some((o) => o.code === "expense_back_to_previous" && o.estimatedImpact === "3100")) // software 6,100 vs 3,000
+      const empty = (await tools.runTool(admin, "getFinancialAlerts", { period: "2001-01" }, prisma)).values as { dataSufficiency: { currentPeriodHasData: boolean }; alerts: unknown[]; opportunities: unknown[] }
+      assert.equal(empty.dataSufficiency.currentPeriodHasData, false)
+      assert.deepEqual([empty.alerts, empty.opportunities], [[], []])
+      // The first month of the books has no previous period: no period-over-period findings.
+      const first = (await tools.runTool(admin, "getFinancialAlerts", { period: months[0].key }, prisma)).values as { dataSufficiency: { previousPeriodHasData: boolean }; alerts: { code: string }[] }
+      assert.equal(first.dataSufficiency.previousPeriodHasData, false)
+      assert.ok(!first.alerts.some((a) => ["revenue_decline", "opex_growth", "payroll_growth", "profit_decline"].includes(a.code)))
+    })
+
+    await step("targets: saved only with ledger:manage (audited); gap analysis and what-if from the 3-month baseline", async () => {
+      const targetsData = await import("../src/lib/data/targets")
+      const ro = await member("targets-ro@example.test", "READ_ONLY")
+      await assert.rejects(() => targetsData.setTargets(ro, { netProfitMonthly: "1", revenueMonthly: null, ebitdaMarginPct: null, cashReserveMonths: null }, prisma), /permission/)
+      await assert.rejects(() => targetsData.setTargets(admin, { netProfitMonthly: null, revenueMonthly: null, ebitdaMarginPct: "150", cashReserveMonths: null }, prisma), /between/)
+      const none = (await tools.runTool(admin, "getTargetGapAnalysis", {}, prisma)).values as { status: string }
+      assert.equal(none.status, "no_targets")
+      await targetsData.setTargets(admin, { netProfitMonthly: "10000", revenueMonthly: "15000", ebitdaMarginPct: "40", cashReserveMonths: "6" }, prisma)
+      assert.equal(await prisma.auditLog.count({ where: { action: "targets.set" } }), 1)
+      // Baseline: the last 3 complete months of the seed.
+      const g = (await tools.runTool(admin, "getTargetGapAnalysis", {}, prisma)).values as { status: string; targetSource: Record<string, string>; baseline: { months: string[]; revenue: string; ebitda: string }; kpis: { metric: string; current: string; gap: string }[]; paths: { path: string; values: Record<string, unknown> }[] }
+      assert.equal(g.status, "ok")
+      assert.deepEqual(g.baseline.months, [months[1].key, months[2].key, months[3].key])
+      assert.equal(g.baseline.revenue, "11666.67") // (12,000 + 13,000 + 10,000) / 3
+      assert.equal(g.baseline.ebitda, "5133.34") // revenue 11,666.67 - opex 6,533.33
+      assert.equal(g.kpis.find((k) => k.metric === "netProfitMonthly")!.gap, "4866.66")
+      assert.equal(g.paths.find((p) => p.path === "revenue_only")!.values.revenueIncrease, "4866.66") // no variable costs in the books
+      assert.equal(g.targetSource.netProfitMonthly, "saved")
+      const asked = (await tools.runTool(admin, "getTargetGapAnalysis", { net_profit_monthly: 6000 }, prisma)).values as { targetSource: Record<string, string>; kpis: { metric: string; target: string }[] }
+      assert.equal(asked.targetSource.netProfitMonthly, "question")
+      assert.equal(asked.kpis[0].target, "6000")
+      const w = (await tools.runTool(admin, "evaluateScenario", { revenue_change_pct: 10, operating_expenses_change_pct: -10 }, prisma)).values as { monthly: { delta: { revenue: string; ebitda: string } } }
+      assert.equal(w.monthly.delta.revenue, "1166.67")
+      assert.equal(w.monthly.delta.ebitda, "1820") // +1,166.67 revenue and 653.33 of opex saved
+      await assert.rejects(() => tools.runTool(admin, "evaluateScenario", { revenue_change_pct: 10000 }, prisma), /Invalid input/)
     })
 
     let readOnly: Awaited<ReturnType<typeof member>>
@@ -262,6 +306,8 @@ async function main() {
       assert.deepEqual(msgs.map((m) => m.role), ["user", "assistant", "user"])
       assert.equal(msgs[0].content, "Проанализируй текущий месяц")
       assert.ok(String(msgs[1].content).includes("EBITDA"))
+      // The earlier answer carries a note of the calculations it used (inputs only, no results).
+      assert.match(String(msgs[1].content), /\[Calculations used for this answer: getFinancialSummary\(\{"period":"\d{4}-\d{2}"\}\), getEBITDA/)
     })
 
     await step("invalid or forbidden tool calls from the model return errors to it, and are audited", async () => {

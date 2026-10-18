@@ -577,6 +577,7 @@ model Organization {
   vaultCredentials VaultCredential[]
   aiConversations  AiConversation[]
   aiMessages       AiMessage[]
+  financialTarget  FinancialTarget?
 
   @@map("organizations")
 }
@@ -615,6 +616,7 @@ model AppUser {
   vaultGrantsGiven      VaultCredentialGrant[] @relation("VaultGrantGrantedBy")
   aiConversations       AiConversation[]
   aiMessages            AiMessage[]
+  targetsUpdated        FinancialTarget[]
 
   @@map("app_users")
 }
@@ -2002,4 +2004,22 @@ model AiMessage {
   @@index([organizationId, createdAt])
   @@index([userId, createdAt])
   @@map("ai_messages")
+}
+
+/// Business targets of an organization used by the AI CFO gap analysis (one row per organization).
+/// Changed only by people with ledger:manage (audited); the AI can read them but never change them.
+model FinancialTarget {
+  organizationId    String   @id @map("organization_id") @db.Uuid
+  netProfitMonthly  Decimal? @map("net_profit_monthly") @db.Decimal(20, 2)
+  revenueMonthly    Decimal? @map("revenue_monthly") @db.Decimal(20, 2)
+  ebitdaMarginPct   Decimal? @map("ebitda_margin_pct") @db.Decimal(6, 2)
+  cashReserveMonths Decimal? @map("cash_reserve_months") @db.Decimal(5, 2)
+  updatedById       String?  @map("updated_by_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  updatedBy    AppUser?     @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+
+  @@map("financial_targets")
 }

@@ -119,4 +119,25 @@ describe("financialAlerts", () => {
     input.previous = pnl(100, 0, 0)
     assert.ok(!codes(input).includes("revenue_decline"))
   })
+  it("flags department payroll spikes from ledger totals", () => {
+    const input = healthy()
+    input.payrollByDepartment = [
+      { id: "d1", name: "Clipping", current: "13000", previous: "10000" },
+      { id: "d2", name: "Influence", current: "10500", previous: "10000" },
+    ]
+    const spikes = financialAlerts(input).filter((a) => a.code === "payroll_department_spike")
+    assert.deepEqual(spikes.map((a) => [a.subject!.name, a.facts.changePct]), [["Clipping", 30]])
+  })
+
+  it("never invents period-over-period problems when the previous period has no data", () => {
+    const input = healthy()
+    input.previous = pnl(0, 0, 0)
+    input.payroll = { current: "50000", previous: "0" }
+    input.previousHasData = false
+    input.current = pnl(100000, 40000, 30000)
+    input.departments = [{ id: "d1", name: "Clipping", revenue: "60000", netProfit: "20000", previousNetProfit: "90000" }]
+    input.payrollByDepartment = [{ id: "d1", name: "Clipping", current: "50000", previous: "0" }]
+    const c = codes(input)
+    for (const code of ["revenue_decline", "opex_growth", "payroll_growth", "ebitda_margin_drop", "profit_decline", "department_profit_decline", "payroll_department_spike"] as const) assert.ok(!c.includes(code), code)
+  })
 })

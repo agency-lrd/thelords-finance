@@ -12,6 +12,7 @@ import type { SourceRef } from "@/lib/ai/envelope"
 import { aiTexts, type AiTexts } from "@/lib/i18n/ai-cfo"
 import { useI18n } from "@/lib/i18n/client"
 
+import { ASK_EVENT } from "./insight-actions"
 import { Markdown } from "./markdown"
 import { streamChat } from "./stream"
 
@@ -157,6 +158,18 @@ export function AiChat(props: {
     bottom.current?.scrollIntoView({ block: "end", behavior: "smooth" })
   }, [messages])
 
+  // Questions sent from the insights and targets panels on the same page.
+  const sendRef = useRef<(q: string) => void>(() => {})
+  const section = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      section.current?.scrollIntoView({ block: "start", behavior: "smooth" })
+      sendRef.current((e as CustomEvent<string>).detail)
+    }
+    window.addEventListener(ASK_EVENT, onAsk)
+    return () => window.removeEventListener(ASK_EVENT, onAsk)
+  }, [])
+
   const updateLast = (fn: (m: Msg) => Msg) => setMessages((list) => list.map((m, i) => (i === list.length - 1 ? fn(m) : m)))
 
   const errorText = (code: string) => (t.errors as Record<string, string>)[code] ?? t.errors.internal
@@ -225,6 +238,10 @@ export function AiChat(props: {
     }
   }
 
+  useEffect(() => {
+    sendRef.current = send
+  })
+
   async function open(id: string) {
     if (busy) return
     const res = await loadConversationAction(id)
@@ -272,7 +289,7 @@ export function AiChat(props: {
         </div>
       </aside>
 
-      <section className="flex min-h-[60vh] flex-col rounded-2xl border border-border bg-card/30">
+      <section ref={section} className="flex min-h-[60vh] scroll-mt-20 flex-col rounded-2xl border border-border bg-card/30">
         <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-4 py-3">
           <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{t.chat.context}</span>
           <span className="rounded-full border border-border px-2.5 py-0.5 font-mono text-xs">{props.period}</span>

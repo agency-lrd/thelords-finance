@@ -5,6 +5,7 @@ import { Suspense } from "react"
 
 import { AiChat } from "@/components/ai-cfo/chat"
 import { Insights } from "@/components/ai-cfo/insights"
+import { TargetsPanel } from "@/components/ai-cfo/targets"
 import { PeriodPicker } from "@/components/reports/period-picker"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { aiConfigured, aiLimits } from "@/lib/ai/config"
@@ -65,7 +66,11 @@ async function AiCfo({ searchParams }: { searchParams: PageProps<"/ai-cfo">["sea
       )}
 
       <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl border border-border bg-card/30" />}>
-        <Insights user={user} period={period} locale={locale} />
+        <Insights user={user} period={period} locale={locale} configured={configured} />
+      </Suspense>
+
+      <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl border border-border bg-card/30" />}>
+        <TargetsPanel user={user} locale={locale} configured={configured} />
       </Suspense>
 
       <AiChat key={period} configured={configured} period={period} departments={departments} initialConversations={conversations} />

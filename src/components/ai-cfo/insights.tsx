@@ -1,14 +1,16 @@
-import { ShieldAlert, TrendingUp } from "lucide-react"
+import { Lightbulb, ShieldAlert, TrendingUp } from "lucide-react"
 import Link from "next/link"
 import { cn } from "cn"
 
 import type { SessionUser } from "@/lib/auth/session"
-import type { Alert } from "@/lib/ai/diagnostics"
+import type { Alert, Opportunity } from "@/lib/ai/diagnostics"
 import type { Completeness } from "@/lib/ai/envelope"
 import type { ForecastResult } from "@/lib/ai/forecast"
 import { runTool } from "@/lib/ai/tools"
 import { aiTexts } from "@/lib/i18n/ai-cfo"
 import { formatAmount, type Locale } from "@/lib/i18n/format"
+
+import { AskAiButton } from "./insight-actions"
 
 type Change = { previous: string; changePct: string | null; difference: string }
 type Summary = {
@@ -19,14 +21,19 @@ type Summary = {
 }
 
 /** Deterministic insights for a period: the same tools the AI uses, shown without AI. */
-export async function Insights({ user, period, locale }: { user: SessionUser; period: string; locale: Locale }) {
+export async function Insights({ user, period, locale, configured }: { user: SessionUser; period: string; locale: Locale; configured: boolean }) {
   const t = aiTexts[locale]
   const money = (v: string | null | undefined) => formatAmount(v ?? null, user.baseCurrency, locale, { decimals: 0 })
   const summary = await runTool(user, "getFinancialSummary", { period })
   const alerts = await runTool(user, "getFinancialAlerts", { period })
   const forecast = await runTool(user, "getFinancialForecast", { months: 12 })
   const s = summary.values as Summary
-  const a = (alerts.values as { alerts: Alert[] }).alerts
+  const findings = alerts.values as { alerts: Alert[]; opportunities: Opportunity[]; dataSufficiency: { currentPeriodHasData: boolean } }
+  const a = findings.alerts
+  const explainPrompt =
+    locale === "ru"
+      ? `Объясни выявленные риски и возможности за ${period}: что из этого важнее всего, почему это произошло (с цифрами и источниками) и что делать в первую очередь.`
+      : `Explain the risks and opportunities found for ${period}: what matters most, why it happened (with figures and sources), and what to do first.`
   const f = forecast.values as ForecastResult
   const prev = (k: string) => (s.vsPreviousPeriod[k] as Change | undefined)?.changePct ?? null
   const badge = (c: Completeness) => (c.status === "complete" ? null : <span className={cn("rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider", c.status === "no_data" ? "bg-red-500/15 text-red-300" : "bg-amber-500/15 text-amber-300")} title={c.notes.join(" ")}>{c.status === "no_data" ? t.insights.noData : t.insights.partial}</span>)
@@ -87,12 +94,17 @@ export async function Insights({ user, period, locale }: { user: SessionUser; pe
       </section>
 
       <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <h2 className="font-display text-xl font-black uppercase italic">{t.insights.alerts}</h2>
           {badge(alerts.completeness)}
+          {findings.dataSufficiency.currentPeriodHasData && (a.length > 0 || findings.opportunities.length > 0) && (
+            <span className="ml-auto"><AskAiButton prompt={explainPrompt} configured={configured} label={t.explain} /></span>
+          )}
         </div>
         <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card/60 p-4">
-          {a.length === 0 ? (
+          {!findings.dataSufficiency.currentPeriodHasData ? (
+            <p className="text-sm text-muted-foreground">{t.insufficient}</p>
+          ) : a.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t.insights.noAlerts}</p>
           ) : (
             a.slice(0, 8).map((x, i) => (
@@ -115,6 +127,27 @@ export async function Insights({ user, period, locale }: { user: SessionUser; pe
             ))}
           </div>
         </div>
+        {findings.dataSufficiency.currentPeriodHasData && (
+          <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card/60 p-4">
+            <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              <Lightbulb className="size-4 text-primary" /> {t.opportunity.title}
+              <span className="ml-auto text-[10px] font-normal normal-case tracking-normal">{t.opportunity.scenario}</span>
+            </p>
+            {findings.opportunities.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t.opportunity.none}</p>
+            ) : (
+              findings.opportunities.slice(0, 5).map((o, i) => (
+                <div key={`${o.code}-${o.subject.id}-${i}`} className="flex items-start justify-between gap-3 border-t border-border/40 pt-2 first:border-0 first:pt-0">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{t.opportunity[o.code]} <span className="text-muted-foreground">· {o.subject.name}</span></p>
+                    <p className="text-xs text-muted-foreground">{o.basis}</p>
+                  </div>
+                  <p className="shrink-0 text-right font-mono text-sm text-emerald-300" title={t.opportunity.impact}>+{money(o.estimatedImpact)}</p>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </section>
     </div>
   )

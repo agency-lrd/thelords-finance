@@ -59,10 +59,10 @@ Every tool is read-only.
 
 | Tool | Permission |
 | --- | --- |
-| getFinancialSummary, getProfitAndLoss, getEBITDA, getEBIT, getCashFlow, getBalanceSheet, getDepartmentProfitability, getRevenueByClient, getExpensesByCategory, getMonthlyFinancialTrends, getBudgetVariance, getFinancialAlerts, getFinancialForecast | `reports:read` |
+| getFinancialSummary, getProfitAndLoss, getEBITDA, getEBIT, getCashFlow, getBalanceSheet, getDepartmentProfitability, getRevenueByClient, getExpensesByCategory, getMonthlyFinancialTrends, getBudgetVariance, getFinancialAlerts, getFinancialForecast, getTargetGapAnalysis, evaluateScenario | `reports:read` |
 | getPayrollSummary: totals per department only, never individual pay or wallets | `payroll:read` |
 | getOwnerDistributions: no emails, approvers or payment references | `ownership:read` |
-| getAccountTransactions: journal lines behind a figure; employee names hidden without `salary:read` | `ledger:read` |
+| getAccountTransactions: journal lines behind a figure; employee names are never sent | `ledger:read` |
 
 Every result has the same envelope:
 
@@ -88,6 +88,53 @@ and the rule that fired it. They cover:
 - unprofitable departments;
 - overdue or high receivables, overdue payables;
 - client concentration.
+
+**Proactive findings.** `getFinancialAlerts` also returns:
+
+- **Department payroll spikes**, from ledger totals.
+- **Opportunities to improve margins**, each with a calculated EBITDA effect:
+  - expense lines back to their previous level;
+  - low-margin clients brought to the company's gross margin;
+  - loss-making departments brought to break-even;
+  - a 10% cut of the largest cost lines.
+- **A data-sufficiency check.** With no posted data in the period, nothing is flagged. With no data in the
+  previous period, no period-over-period rule runs. Problems are never inferred from missing data.
+
+The insights panel on `/ai-cfo` shows these, and "Explain with AI" asks the chat to explain them.
+
+**Targets** (`src/lib/ai/targets.ts`, table `financial_targets`):
+
+- **What is stored:** monthly net profit, monthly revenue, EBITDA margin % and a cash reserve in months of
+  costs, one set per organization.
+- **Who can change them:** only roles with `ledger:manage`, in the targets panel; each change is audited.
+  The AI can read targets but not change them.
+- **getTargetGapAnalysis:** compares the targets, or values given in the question, with the baseline (the
+  average of the last 3 complete months). It returns the gap and the ways to close it:
+  - revenue growth only;
+  - fixed-cost cuts only;
+  - balanced (half revenue, half costs);
+  - gross-margin improvement.
+- **evaluateScenario:** recalculates the baseline after percentage changes to revenue, costs and payroll.
+- **Assumptions:** non-payroll cost of services varies with revenue; operating expenses and delivery
+  payroll are fixed; the effective tax rate stays as it was.
+- **"Build a plan with AI":** asks the chat for a plan with levers, assumptions, the calculated impact of
+  each lever and KPIs.
+
+**How the AI works a question.** The system prompt gives the AI investigation workflows (for example, for
+"why did profit fall": EBITDA drivers, P&L, departments, payroll and expenses). It also sets a 7-part
+answer structure:
+
+1. Direct answer
+2. Key figures
+3. Drivers
+4. Risks and opportunities
+5. Actions
+6. Expected impact
+7. Next questions
+
+Every statement is labelled as a fact, a calculation, a forecast or a recommendation, and every figure is
+cited with its period and source. In follow-up turns, earlier answers include a note of the calculations
+they used (tool names and inputs, never results), so the AI keeps context.
 
 **Forecasts** (`src/lib/ai/forecast.ts`) are deterministic:
 

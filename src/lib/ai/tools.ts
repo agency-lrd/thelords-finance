@@ -7,6 +7,7 @@ import type { SessionUser } from "@/lib/auth/session"
 import { budgetForRange, SCENARIOS } from "@/lib/data/budgets"
 import { prisma, type Db } from "@/lib/data/db"
 import { listDistributions, listOwners } from "@/lib/data/owners"
+import { getTargets } from "@/lib/data/targets"
 import { UserInputError } from "@/lib/forms"
 import { Decimal } from "@/lib/money"
 import { clientProfitability } from "@/lib/reports/analytics"
@@ -16,9 +17,10 @@ import { currentRange, isoDate, parseRange, previous, range, type Range } from "
 import { buildPnl, growth, percent, type Pnl } from "@/lib/reports/statements"
 
 import { detectAnomalies } from "./anomalies"
-import { financialAlerts, type PnlFigures } from "./diagnostics"
+import { financialAlerts, marginOpportunities, type PnlFigures } from "./diagnostics"
 import { completeness, href, periodOf, type SourceRef, type ToolEnvelope } from "./envelope"
 import { buildForecast, FORECAST_SCENARIOS, type BudgetMonth, type ForecastScenario, type MonthActual } from "./forecast"
+import { targetGap, whatIf, type Baseline } from "./targets"
 import { assertAccount, assertClient, assertDepartment, payrollExpenseByDepartment, payrollExpenseByMonth, payslipTotals, subtypeBalance } from "./queries"
 
 /*
@@ -604,15 +606,28 @@ export const FINANCIAL_TOOLS = [
   tool({
     name: "getFinancialAlerts",
     description:
-      "Rule-based risk alerts for a period, each with the figures and the threshold that fired it: revenue decline, opex or payroll growing faster than revenue, negative margins, margin and profit drops, budget overruns and shortfalls, low runway, cash below reserve, negative cash forecast, obligations above cash, unprofitable departments, overdue or high receivables, overdue payables, client concentration. Also lists ledger lines that deviate strongly from their last 3 months.",
+      "Proactive findings for a period, from fixed rules over posted data. alerts: revenue decline, opex or payroll growing faster than revenue, department payroll spikes, negative margins, margin and profit drops, budget overruns and shortfalls, low runway, cash below reserve, negative cash forecast, obligations above cash, unprofitable departments, overdue or high receivables, overdue payables, client concentration; each with its figures and the threshold that fired it. opportunities: ways to improve margins with a calculated EBITDA effect (scenario, not fact). dataSufficiency: whether there is enough posted data; when it is not sufficient, nothing is flagged. Also ledger lines deviating strongly from their last 3 months. Start here for 'what are the risks', 'how are we doing', 'where can we improve'.",
     permission: "reports:read",
     schema: z.strictObject({ period: opt(period) }),
     run: async (user, input, { db }) => {
       const r = rangeOf(input.period)
+      const done = await completeness(user, r, db)
+      const prevDone = await completeness(user, previous(r), db)
+      const sources: SourceRef[] = [
+        { kind: "report", label: "Executive dashboard", href: href.dashboard(r) },
+        { kind: "report", label: "P&L", href: href.pnl(r) },
+        { kind: "report", label: "Cash flow", href: href.cashFlow(r) },
+        { kind: "budget", label: `Budget ${r.year}`, href: href.budgets(r.year) },
+      ]
+      const dataSufficiency = { currentPeriodHasData: done.postedEntries > 0, previousPeriodHasData: prevDone.postedEntries > 0, previousPeriod: previous(r).key }
+      if (!dataSufficiency.currentPeriodHasData) {
+        return { tool: "getFinancialAlerts", period: periodOf(r), currency: user.baseCurrency, nature: "mixed", values: { dataSufficiency, alerts: [], opportunities: [], lineDeviations: [], note: "No posted data for the period: no findings are calculated. Do not infer problems." }, sources, completeness: done }
+      }
       const asOf = asOfFor(r)
       const report = await pnlReport(user, r, {}, db)
-      const payrollNow = await payrollTotal(user, r, db)
-      const payrollPrev = await payrollTotal(user, previous(r), db)
+      const payrollNow = await payrollExpenseByDepartment(user, r, db)
+      const payrollPrev = await payrollExpenseByDepartment(user, previous(r), db)
+      const sumPayroll = (rows: typeof payrollNow) => rows.reduce((a, x) => a.add(x.total), new Decimal(0)).toString()
       const budget = await budgetForRange(user, r, {}, db)
       const ind = await cashIndicators(user, asOf, db)
       const forecast = await cashForecast(user, todayUtc(), 3, db)
@@ -623,26 +638,107 @@ export const FINANCIAL_TOOLS = [
         days: Math.round((r.to.getTime() - r.from.getTime()) / 86_400_000) + 1,
         current: pnlFigures(report.current),
         previous: pnlFigures(report.previous),
-        payroll: { current: payrollNow, previous: payrollPrev },
+        payroll: { current: sumPayroll(payrollNow), previous: sumPayroll(payrollPrev) },
         budget: { revenue: budget.metric("REVENUE"), directCosts: budget.metric("DIRECT_COSTS"), opex: budget.metric("OPEX"), payroll: budget.metric("PAYROLL"), ebitda: budget.metric("EBITDA"), netProfit: budget.metric("NET_PROFIT") },
         cash: { ...ind, reserve: budget.metric("CASH_RESERVE"), negativeForecastMonth: forecast.scenarios.BASE.find((m) => new Decimal(m.closing).isNegative())?.month ?? null },
         departments: depts.map((d) => ({ id: d.id, name: d.name, revenue: d.pnl.revenue, netProfit: d.pnl.netProfit, previousNetProfit: prevDepts.find((p) => p.id === d.id)?.pnl.netProfit ?? null })),
         clients: clients.map((c) => ({ id: c.id, name: c.name, revenue: c.revenue })),
+        payrollByDepartment: payrollNow.map((d) => ({ id: d.department_id, name: d.department ?? "(no department)", current: d.total, previous: payrollPrev.find((p) => p.department_id === d.department_id)?.total ?? "0" })),
+        previousHasData: dataSufficiency.previousPeriodHasData,
       })
+      const expenseSections = ["costOfServices", "operatingExpenses", "depreciation", "amortization", "otherExpense"] as const
+      const prevLines = expenseSections.flatMap((k) => report.previous.sections[k].lines)
+      const opportunities = marginOpportunities({
+        revenue: report.current.revenue,
+        grossMarginPct: report.current.margins.gross,
+        totalExpenses: report.current.totalExpenses,
+        expenses: expenseSections.flatMap((k) => report.current.sections[k].lines.map((l) => ({ accountId: l.accountId, account: `${l.code} ${l.name}`, section: k, current: l.amount, previous: prevLines.find((x) => x.accountId === l.accountId)?.amount ?? "0" }))),
+        clients: clients.map((c) => ({ id: c.id, name: c.name, revenue: c.revenue, contribution: c.profit })),
+        departments: depts.map((d) => ({ id: d.id, name: d.name, revenue: d.pnl.revenue, netProfit: d.pnl.netProfit })),
+        previousHasData: dataSufficiency.previousPeriodHasData,
+      }).slice(0, 8)
       const deviations = r.kind === "month" ? await anomalies(user, r.year, r.index, db) : []
       return {
         tool: "getFinancialAlerts",
         period: periodOf(r),
         currency: user.baseCurrency,
         nature: "mixed",
-        values: { alerts, lineDeviations: deviations.slice(0, 10), note: "Alerts are calculated by fixed rules from posted data; the cash-forecast alert uses the forecast, not actuals." },
-        sources: [
-          { kind: "report", label: "Executive dashboard", href: href.dashboard(r) },
-          { kind: "report", label: "P&L", href: href.pnl(r) },
-          { kind: "report", label: "Cash flow", href: href.cashFlow(r) },
-          { kind: "budget", label: `Budget ${r.year}`, href: href.budgets(r.year) },
-        ],
-        completeness: await completeness(user, r, db),
+        values: {
+          dataSufficiency,
+          alerts,
+          opportunities,
+          lineDeviations: deviations.slice(0, 10),
+          note: `Alerts are fixed rules over posted data${dataSufficiency.previousPeriodHasData ? "" : "; the previous period has no posted data, so period-over-period rules were skipped"}. The cash-forecast alert uses the forecast. Opportunity impacts are calculated scenarios, not facts.`,
+        },
+        sources,
+        completeness: done,
+      }
+    },
+  }),
+
+  tool({
+    name: "getTargetGapAnalysis",
+    description:
+      "Gap between current monthly results (average of the last 3 complete months) and business targets: monthly net profit, monthly revenue, EBITDA margin %, cash reserve in months of costs. Uses the organization's saved targets unless the question gives other values. Returns KPIs (current, target, gap) and the ways to close each gap (revenue growth, cost cuts, balanced, gross margin) with the required amounts, plus assumptions. Use for targets, improvement plans and 'what do we need to reach X'.",
+    permission: "reports:read",
+    schema: z.strictObject({
+      net_profit_monthly: opt(z.number().min(-1e12).max(1e12).describe("Target net profit per month, base currency.")),
+      revenue_monthly: opt(z.number().min(0).max(1e12).describe("Target revenue per month, base currency.")),
+      ebitda_margin_pct: opt(z.number().min(-100).max(100).describe("Target EBITDA margin in percent, e.g. 30.")),
+      cash_reserve_months: opt(z.number().min(0).max(60).describe("Target cash reserve in months of operating costs, e.g. 6.")),
+    }),
+    run: async (user, input, { db }) => {
+      const saved = await getTargets(user, db)
+      const pick = (given: number | null | undefined, stored: string | null) => (given !== null && given !== undefined ? String(given) : stored)
+      const targets = {
+        netProfitMonthly: pick(input.net_profit_monthly, saved.netProfitMonthly),
+        revenueMonthly: pick(input.revenue_monthly, saved.revenueMonthly),
+        ebitdaMarginPct: pick(input.ebitda_margin_pct, saved.ebitdaMarginPct),
+        cashReserveMonths: pick(input.cash_reserve_months, saved.cashReserveMonths),
+      }
+      const given = (v: number | null | undefined) => (v !== null && v !== undefined ? "question" : "saved")
+      const targetSource = { netProfitMonthly: given(input.net_profit_monthly), revenueMonthly: given(input.revenue_monthly), ebitdaMarginPct: given(input.ebitda_margin_pct), cashReserveMonths: given(input.cash_reserve_months) }
+      const base = await baselineFor(user, db)
+      const anyTarget = Object.values(targets).some((v) => v !== null)
+      const values = !anyTarget
+        ? { status: "no_targets", note: "No targets are saved and none were given. Ask the user for a target." }
+        : base.baseline === null
+          ? { status: "insufficient_history", historyMonths: base.months.length, requiredMonths: 3 }
+          : { status: "ok", targets, targetSource, ...targetGap(base.baseline, targets) }
+      return {
+        tool: "getTargetGapAnalysis",
+        period: { key: base.key, from: base.from, to: base.to },
+        currency: user.baseCurrency,
+        nature: "mixed",
+        values,
+        sources: [{ kind: "report", label: "AI CFO targets", href: "/ai-cfo#targets" }, { kind: "report", label: "Monthly analytics", href: href.analytics(Number(base.to.slice(0, 4))) }],
+        completeness: await completeness(user, { from: new Date(`${base.from}T00:00:00Z`), to: new Date(`${base.to}T00:00:00Z`) }, db),
+      }
+    },
+  }),
+
+  tool({
+    name: "evaluateScenario",
+    description:
+      "What-if on the monthly baseline (average of the last 3 complete months): apply percentage changes to revenue, non-payroll cost of services, non-payroll operating expenses and payroll, and get revenue, costs, payroll, EBITDA and margin, EBIT, net profit and margin, and monthly cash flow before and after, with the difference. Calculated scenario, not a forecast or fact. Use to evaluate business decisions (price rise, hiring, cost cuts).",
+    permission: "reports:read",
+    schema: z.strictObject({
+      revenue_change_pct: opt(z.number().min(-100).max(500).describe("Revenue change in percent. Variable costs follow revenue.")),
+      cost_of_services_change_pct: opt(z.number().min(-100).max(500).describe("Change of non-payroll cost of services in percent (on top of the revenue effect).")),
+      operating_expenses_change_pct: opt(z.number().min(-100).max(500).describe("Change of non-payroll operating expenses in percent.")),
+      payroll_change_pct: opt(z.number().min(-100).max(500).describe("Change of all payroll in percent.")),
+    }),
+    run: async (user, input, { db }) => {
+      const base = await baselineFor(user, db)
+      const changes = { revenuePct: input.revenue_change_pct ?? 0, costOfServicesPct: input.cost_of_services_change_pct ?? 0, operatingExpensesPct: input.operating_expenses_change_pct ?? 0, payrollPct: input.payroll_change_pct ?? 0 }
+      return {
+        tool: "evaluateScenario",
+        period: { key: base.key, from: base.from, to: base.to },
+        currency: user.baseCurrency,
+        nature: "forecast",
+        values: base.baseline === null ? { status: "insufficient_history", historyMonths: base.months.length, requiredMonths: 3 } : { status: "ok", baselineMonths: base.months, ...whatIf(base.baseline, changes) },
+        sources: [{ kind: "report", label: "Monthly analytics", href: href.analytics(Number(base.to.slice(0, 4))) }, { kind: "report", label: "P&L", href: href.pnl(parseRange(base.months[base.months.length - 1] ?? null, currentRange("month"))) }],
+        completeness: await completeness(user, { from: new Date(`${base.from}T00:00:00Z`), to: new Date(`${base.to}T00:00:00Z`) }, db),
       }
     },
   }),
@@ -678,7 +774,7 @@ export const FINANCIAL_TOOLS = [
   tool({
     name: "getAccountTransactions",
     description:
-      "Source records behind a P&L or balance line: the posted journal lines of one ledger account in a period (date, entry number, description, debit, credit, department, client, project). Use to show where a number comes from. At most 50 lines, newest last.",
+      "Source records behind a P&L or balance line: the posted journal lines of one ledger account in a period (date, entry number, description, debit, credit, department, client, project; employee names are not included). Use to show where a number comes from. At most 50 lines, newest last.",
     permission: "ledger:read",
     schema: z.strictObject({ account_id: z.uuid().describe("Ledger account id (accountId from another tool)."), period: opt(period), department_id: opt(departmentId) }),
     run: async (user, input, { db }) => {
@@ -686,9 +782,8 @@ export const FINANCIAL_TOOLS = [
       const account = await assertAccount(user, input.account_id, db)
       const dept = await assertDepartment(user, input.department_id, db)
       const lines = await drillDown(user, account.id, r, { departmentId: dept?.id }, db)
-      // Individual pay is visible only to roles that may see salaries.
-      const showPeople = user.permissions.has("salary:read")
-      const shown = lines.slice(-50).map((l) => ({ ...l, employee: showPeople ? l.employee : l.employee ? "(employee hidden)" : null }))
+      // Employee names are personal data the analysis does not need: never sent to the model.
+      const shown = lines.slice(-50).map((l) => ({ ...l, employee: l.employee ? "(employee)" : null }))
       return {
         tool: "getAccountTransactions",
         period: periodOf(r),
@@ -734,6 +829,37 @@ export function toolsFor(user: SessionUser) {
 }
 
 // ─── Forecast and anomaly inputs ─────────────────────────────────────────────
+
+/**
+ * Monthly baseline for targets and what-if: average of the last 3 complete months with posted
+ * activity (null when there are fewer than 3), payroll split from the ledger, and today's cash.
+ */
+export async function baselineFor(user: SessionUser, db: Db = prisma) {
+  const now = currentRange("month")
+  const window = [previous(previous(previous(now))), previous(previous(now)), previous(now)]
+  const series = new Map<string, Awaited<ReturnType<typeof monthlySeries>>[number]>()
+  for (const y of [...new Set(window.map((w) => w.year))]) for (const s of await monthlySeries(user, y, {}, db)) series.set(s.key, s)
+  const rows = window.map((w) => series.get(w.key)!).filter((s) => [s.pnl.revenue, s.pnl.totalExpenses].some((v) => !new Decimal(v).isZero()))
+  const span = { key: `${window[0].key}..${window[2].key}`, from: iso(window[0].from), to: iso(window[2].to), months: rows.map((s) => s.key) }
+  if (rows.length < 3) return { ...span, baseline: null }
+  const avg = (f: (s: (typeof rows)[number]) => string) => rows.reduce((a, s) => a.add(f(s)), new Decimal(0)).div(rows.length).toDecimalPlaces(2).toString()
+  const payroll = await payrollExpenseByDepartment(user, { from: window[0].from, to: window[2].to }, db)
+  const payrollAvg = (k: "cost_of_services" | "operating") => payroll.reduce((a, x) => a.add(x[k]), new Decimal(0)).div(3).toDecimalPlaces(2).toString()
+  const baseline: Baseline = {
+    months: span.months,
+    revenue: avg((s) => s.pnl.revenue),
+    costOfServices: avg((s) => s.pnl.costOfServices),
+    operatingExpenses: avg((s) => s.pnl.operatingExpenses),
+    payrollCostOfServices: payrollAvg("cost_of_services"),
+    payrollOperating: payrollAvg("operating"),
+    depreciationAndAmortization: avg((s) => s.pnl.depreciationAndAmortization),
+    nonOperating: avg((s) => s.pnl.nonOperating),
+    incomeTax: avg((s) => s.pnl.incomeTax),
+    netCashFlow: avg((s) => s.flow.netChange),
+    cash: await cashBalance(db, user.organizationId, todayUtc()),
+  }
+  return { ...span, baseline }
+}
 
 /** History (complete months, up to 12, from the first month with activity), budgets and cash for the forecast. */
 export async function forecastFor(user: SessionUser, months: number, db: Db = prisma) {

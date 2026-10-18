@@ -91,15 +91,25 @@ function toolResultContent(envelope: unknown) {
   return JSON.stringify({ truncated: true, note: `Result was ${json.length} characters; only the first ${MAX_TOOL_RESULT_CHARS} are included. Ask for a narrower period or filter.`, partial: json.slice(0, MAX_TOOL_RESULT_CHARS) })
 }
 
+/** One line naming the calculations an earlier answer used (tool and input only, never results). */
+export function toolsNote(tools: unknown) {
+  if (!Array.isArray(tools)) return ""
+  const calls = (tools as { name?: unknown; input?: unknown; status?: unknown }[])
+    .filter((t) => typeof t.name === "string" && t.status === "done")
+    .map((t) => `${t.name}(${JSON.stringify(t.input ?? {}).slice(0, 120)})`)
+  return calls.length ? `\n\n[Calculations used for this answer: ${calls.slice(0, 12).join(", ")}]` : ""
+}
+
 /** Text-only history in strict user/assistant alternation, starting with the user. */
-export function historyMessages(rows: { role: "USER" | "ASSISTANT"; content: string; status: string }[]): BetaMessageParam[] {
+export function historyMessages(rows: { role: "USER" | "ASSISTANT"; content: string; status: string; tools?: unknown }[]): BetaMessageParam[] {
   const out: BetaMessageParam[] = []
   for (const r of rows) {
     if (r.role === "ASSISTANT" && (r.status === "ERROR" || r.status === "REFUSED" || !r.content.trim())) continue
     const role = r.role === "USER" ? "user" : "assistant"
+    const content = role === "assistant" ? r.content + toolsNote(r.tools) : r.content
     const last = out[out.length - 1]
-    if (last && last.role === role) last.content = `${last.content as string}\n\n${r.content}`
-    else if (out.length || role === "user") out.push({ role, content: r.content })
+    if (last && last.role === role) last.content = `${last.content as string}\n\n${content}`
+    else if (out.length || role === "user") out.push({ role, content })
   }
   if (out.length && out[out.length - 1].role === "user") out.pop() // unanswered question: the new one replaces it
   return out
@@ -162,7 +172,7 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
     where: { conversationId: conversation.id },
     orderBy: { createdAt: "desc" },
     take: limits.historyMessages,
-    select: { role: true, content: true, status: true },
+    select: { role: true, content: true, status: true, tools: true },
   })
   const history = historyMessages(previousRows.reverse())
   await db.aiMessage.create({ data: { conversationId: conversation.id, organizationId: user.organizationId, userId: user.id, role: "USER", content: request.message } })
