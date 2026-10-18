@@ -162,7 +162,7 @@ export async function createDistribution(user: SessionUser, input: { declaredDat
   return inTx(db, async (tx) => {
     const m = monthOfDate(input.declaredDate)
     const period = await ensurePeriod(tx, user.organizationId, m)
-    assertPeriodOpen(period, m)
+    assertPeriodOpen(period, m, user)
     const stakes = await tx.ownershipStake.findMany({
       where: { shareholder: { organizationId: user.organizationId, archivedAt: null }, validFrom: { lte: input.declaredDate }, OR: [{ validTo: null }, { validTo: { gt: input.declaredDate } }] },
     })
@@ -233,7 +233,7 @@ export async function payAllocation(user: SessionUser, allocationId: string, inp
     if (!account) throw new UserInputError("Choose the company account.")
     const m = monthOfDate(input.date)
     const period = await ensurePeriod(tx, user.organizationId, m)
-    assertPeriodOpen(period, m)
+    assertPeriodOpen(period, m, user)
     const amount = new Decimal(a.amount.toString())
     await postJournal(tx, user, {
       periodId: period.id,

@@ -62,6 +62,40 @@ const ru = {
     created: "Отдел добавлен",
   },
   archiveRow: "В архив",
+  month: {
+    choose: "Выбрать месяц",
+    prevYear: "Предыдущий год",
+    nextYear: "Следующий год",
+    today: "Сегодня",
+    current: "Текущий месяц",
+    unsaved: "Есть несохранённые изменения в ячейке или сохранение ещё идёт. Перейти к другому месяцу без них?",
+  },
+  period: {
+    label: "Период",
+    payroll: "Ведомость",
+    status: {
+      OPEN: { name: "Открыт", tip: "Финансовый период открыт: данные месяца можно вносить и редактировать (в рамках прав роли)." },
+      CLOSING: { name: "На проверке", tip: "Месяц проверяется перед закрытием: изменять данные могут только ответственные за закрытие периода (право period:close)." },
+      CLOSED: { name: "Закрыт", tip: "Месяц закрыт: ведомость, проводки и отчёты за него зафиксированы и не меняются. Открыть заново можно только с правом period:reopen, с указанием причины (записывается в журнал)." },
+      LOCKED: { name: "Заблокирован", tip: "Месяц закрыт окончательно и не может быть открыт." },
+    },
+    run: {
+      draft: { name: "Черновик", tip: "Черновик — ведомость за месяц ещё не утверждена: суммы можно редактировать, строки подтверждать. Ничего не проведено в бухгалтерию до утверждения месяца." },
+      approved: { name: "Утверждена", tip: "Ведомость утверждена: начисление проведено в бухгалтерию, суммы зафиксированы; дальше — выплаты." },
+      paying: { name: "Идут выплаты", tip: "Ведомость утверждена, часть выплат проведена." },
+      paid: { name: "Выплачена", tip: "Все суммы по ведомости выплачены." },
+      readOnly: { name: "Только просмотр", tip: "Изменения недоступны: месяц закрыт или на проверке, а у вашей роли нет права менять его." },
+    },
+    review: "Отправить на проверку",
+    close: "Закрыть месяц",
+    reopen: "Открыть заново",
+    closeConfirm: "Закрыть {month}? Данные месяца больше нельзя будет менять; открыть заново сможет только пользователь с правом period:reopen.",
+    reviewConfirm: "Отправить {month} на проверку? Менять данные смогут только ответственные за закрытие.",
+    reopenPrompt: "Причина повторного открытия {month} (будет записана в журнал аудита):",
+    closedBy: "Закрыт {date}, {who}",
+    drafts: "Непроведённых проводок: {n} — закрыть месяц нельзя, пока они есть.",
+    done: "Статус периода обновлён",
+  },
 }
 
 const en: typeof ru = {
@@ -127,6 +161,40 @@ const en: typeof ru = {
     created: "Department added",
   },
   archiveRow: "Archive",
+  month: {
+    choose: "Choose month",
+    prevYear: "Previous year",
+    nextYear: "Next year",
+    today: "Today",
+    current: "Current month",
+    unsaved: "A cell is being edited or a save is still running. Switch months without it?",
+  },
+  period: {
+    label: "Period",
+    payroll: "Payroll",
+    status: {
+      OPEN: { name: "Open", tip: "The financial period is open: the month's records can be entered and edited (within your role's rights)." },
+      CLOSING: { name: "Under review", tip: "The month is being reviewed before closing: only people who close periods (period:close) can change its records." },
+      CLOSED: { name: "Closed", tip: "The month is closed: its payroll, entries and reports are fixed. Reopening needs period:reopen and a reason (recorded in the audit log)." },
+      LOCKED: { name: "Locked", tip: "The month is permanently closed and cannot be reopened." },
+    },
+    run: {
+      draft: { name: "Draft", tip: "Draft: the month's payroll is not approved yet. Amounts can be edited and rows confirmed; nothing is posted to the ledger until the month is approved." },
+      approved: { name: "Approved", tip: "Payroll approved: the accrual is posted to the ledger and amounts are fixed; payments come next." },
+      paying: { name: "Paying", tip: "Payroll approved and partly paid." },
+      paid: { name: "Paid", tip: "Everything on the payroll has been paid." },
+      readOnly: { name: "Read-only", tip: "No changes: the month is closed or under review and your role cannot change it." },
+    },
+    review: "Send for review",
+    close: "Close month",
+    reopen: "Reopen",
+    closeConfirm: "Close {month}? Its records can no longer be changed; only users with period:reopen can reopen it.",
+    reviewConfirm: "Send {month} for review? Only people who close periods will be able to change it.",
+    reopenPrompt: "Reason for reopening {month} (recorded in the audit log):",
+    closedBy: "Closed {date} by {who}",
+    drafts: "Unposted journal entries: {n}. The month cannot be closed while they exist.",
+    done: "Period status updated",
+  },
 }
 
 export const sheetAdminTexts = { ru, en }

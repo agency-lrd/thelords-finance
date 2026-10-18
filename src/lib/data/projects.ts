@@ -155,7 +155,7 @@ export async function addIncome(
   return inTx(db, async (tx) => {
     await checkProjectAndCategory(tx, user, input.projectId, input.categoryId, INCOME_KINDS)
     const period = await ensurePeriod(tx, user.organizationId, input.month)
-    assertPeriodOpen(period, input.month)
+    assertPeriodOpen(period, input.month, user)
     const fxRate = await fxRateFor(tx, user, input.currency, input.month, input.fxRate)
     const received = input.status === "RECEIVED" ? input.amount : (input.receivedAmount ?? new Decimal(0))
     if (received.gt(input.amount)) throw new UserInputError("Received amount cannot exceed the amount.")
@@ -248,7 +248,7 @@ export async function addCost(
     }
     const month = { year: input.incurredDate.getUTCFullYear(), month: input.incurredDate.getUTCMonth() + 1 }
     const period = await ensurePeriod(tx, user.organizationId, month)
-    assertPeriodOpen(period, month)
+    assertPeriodOpen(period, month, user)
     const fxRate = await fxRateFor(tx, user, input.currency, month, input.fxRate)
 
     const cost = await tx.projectCost.create({

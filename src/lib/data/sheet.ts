@@ -184,7 +184,11 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
 
   rows.sort((a, b) => (a.departmentName ?? "~").localeCompare(b.departmentName ?? "~") || Number(b.isTeamLead) - Number(a.isTeamLead) || a.name.localeCompare(b.name))
 
-  const editable = (!run || run.status === "DRAFT" || run.status === "CALCULATED") && period?.status !== "CLOSED" && period?.status !== "LOCKED"
+  const editable =
+    (!run || run.status === "DRAFT" || run.status === "CALCULATED") &&
+    period?.status !== "CLOSED" &&
+    period?.status !== "LOCKED" &&
+    (period?.status !== "CLOSING" || user.permissions.has("period:close"))
   return {
     month: m,
     run: run ? { id: run.id, status: run.status, approvals: run.approvals.map((a) => ({ email: a.approver.email, decision: a.decision, at: a.decidedAt.toISOString() })) } : null,
@@ -303,7 +307,7 @@ export function requiredPermission(field: SheetField) {
 
 async function editableMonth(tx: Tx, user: SessionUser, m: Month) {
   const period = await ensurePeriod(tx, user.organizationId, m)
-  assertPeriodOpen(period, m)
+  assertPeriodOpen(period, m, user)
   const run = await findRun(tx, user.organizationId, m)
   if (run && run.status !== "DRAFT" && run.status !== "CALCULATED") {
     throw new UserInputError(`${monthLabel(m)} is approved; its sheet can no longer be changed.`)
@@ -910,7 +914,7 @@ export async function recordPayment(
     if (baseAmount.gt(outstandingBase.add("0.01"))) throw new UserInputError("The payment is larger than the outstanding amount.")
 
     const period = await ensurePeriod(tx, user.organizationId, { year: input.paidAt.getUTCFullYear(), month: input.paidAt.getUTCMonth() + 1 })
-    assertPeriodOpen(period, { year: period.year, month: period.month })
+    assertPeriodOpen(period, { year: period.year, month: period.month }, user)
     const fee = input.fee ?? new Decimal(0)
     const feeBase = toBase(fee, paymentFx)
     const payable = await accountByCode(tx, user.organizationId, "2100")

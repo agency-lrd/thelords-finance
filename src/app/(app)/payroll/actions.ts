@@ -30,6 +30,7 @@ import {
   setDepartmentColor,
   setSheetDepartmentArchived,
 } from "@/lib/data/sheet-admin"
+import { setPeriodStatus, type PeriodAction } from "@/lib/data/periods"
 import { addLedgerEntry, deleteLedgerEntry, recordSettlement, setLedgerConfirmed, updateLedgerEntry } from "@/lib/data/project-ledger"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { Decimal } from "@/lib/money"
@@ -374,6 +375,18 @@ export async function mergeDepartmentsAction(sourceId: string, targetId: string,
     if (confirmed !== true) throw new UserInputError("Confirm the merge first.")
     await mergeDepartments(await authorize("structure:manage"), sourceId, targetId, month(monthKey))
     return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/** Moves the month to review, closes it or reopens it (permission-checked and audited; never automatic). */
+export async function periodAction(monthKey: string, action: string, reason: string | null): Promise<CellResult> {
+  try {
+    if (!["review", "close", "reopen"].includes(action)) throw new UserInputError("Unknown action.")
+    await setPeriodStatus(await sessionUser(), month(monthKey), action as PeriodAction, typeof reason === "string" ? reason : null)
+    for (const p of ["/transactions", "/pnl", "/cash-flow", "/balance-sheet"]) revalidatePath(p)
+    return done()
   } catch (error) {
     return fail(error)
   }

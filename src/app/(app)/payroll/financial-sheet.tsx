@@ -1,7 +1,7 @@
 "use client"
 
 import Decimal from "decimal.js"
-import { ChevronLeft, ChevronRight, Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus } from "lucide-react"
+import { Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type KeyboardEvent as ReactKeyboardEvent } from "react"
@@ -16,7 +16,9 @@ import type { RuleConfig, RuleModel, SheetRow } from "@/lib/data/sheet"
 import { sheetAdminTexts } from "@/lib/i18n/sheet-admin"
 
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
+import { MonthPicker, StatusBadges } from "./month-header"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
+import { withMonth } from "@/lib/month-nav"
 import {
   addEmployeeAction,
   approveMonthAction,
@@ -42,6 +44,8 @@ type Perms = {
   history: boolean
   structure: boolean
   deleteEmployee: boolean
+  periodClose: boolean
+  periodReopen: boolean
 }
 
 type Props = {
@@ -54,6 +58,7 @@ type Props = {
   departments: SheetDepartment[]
   accounts: { id: string; name: string; currency: string }[]
   perms: Perms
+  period: { status: "OPEN" | "CLOSING" | "CLOSED" | "LOCKED"; closedAt: string | null; closedBy: string | null; draftEntries: number }
 }
 
 type Undo = { employeeId: string; col: ColKey; before: string; after: string }
@@ -92,11 +97,6 @@ const MONEY_TOTALS: ColKey[] = ["fix", "variable", "bonus", "deduction", "kpiTar
 const STATUSES = ["ONBOARDING", "ACTIVE", "ON_LEAVE", "TERMINATED"] as const
 const CURRENCIES = ["USD", "USDT", "EUR", "GBP"] as const
 
-function addMonth(key: string, delta: number) {
-  const [y, m] = key.split("-").map(Number)
-  const index = y * 12 + (m - 1) + delta
-  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}`
-}
 
 type Toast = { id: number; text: string; tone: "ok" | "error" }
 
@@ -167,6 +167,19 @@ export function FinancialSheet(props: Props) {
   }, [])
 
   const refresh = useCallback(() => startRefresh(() => router.refresh()), [router])
+
+  // Month changes keep the URL in sync (bookmarkable) and never drop a cell that is being edited or saved.
+  const unsaved = editing !== null || inflight > 0
+  function navigate(key: string) {
+    if (unsaved && !window.confirm(A.month.unsaved)) return
+    router.push(withMonth(window.location.search, key))
+  }
+  useEffect(() => {
+    if (!unsaved) return
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [unsaved])
 
   // Pending optimistic values are dropped once fresh rows arrive from the server.
   const [rowsSeen, setRowsSeen] = useState(rows)
@@ -578,7 +591,6 @@ export function FinancialSheet(props: Props) {
 
   // ── Render ──
 
-  const statusBadge = props.runStatus === "PAID" ? t.sheet.paidMonth : props.runStatus === "PAYING" ? t.sheet.payingMonth : props.runStatus === "APPROVED" ? t.sheet.approved : !editable ? t.sheet.locked : t.sheet.draft
 
   return (
     <div className="flex flex-col gap-5">
@@ -586,17 +598,20 @@ export function FinancialSheet(props: Props) {
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="flex flex-col gap-2">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">{t.sheet.title}</p>
-          <div className="flex items-center gap-2">
-            <Link href={`?month=${addMonth(monthKey, -1)}`} aria-label={t.sheet.prevMonth} className="flex size-9 items-center justify-center rounded-full border border-border hover:border-primary/60 hover:text-primary">
-              <ChevronLeft className="size-4" />
-            </Link>
-            <h1 className="font-display text-3xl font-black uppercase tracking-tight sm:text-4xl">{monthTitle}</h1>
-            <Link href={`?month=${addMonth(monthKey, 1)}`} aria-label={t.sheet.nextMonth} className="flex size-9 items-center justify-center rounded-full border border-border hover:border-primary/60 hover:text-primary">
-              <ChevronRight className="size-4" />
-            </Link>
-            <span className={cn("ml-2 rounded-full border px-3 py-1 text-xs", props.runStatus === "APPROVED" || props.runStatus === "PAID" || props.runStatus === "PAYING" ? "border-primary/50 text-primary" : "border-border text-muted-foreground")}>
-              {statusBadge}
-            </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <MonthPicker monthKey={monthKey} locale={locale} t={A} onNavigate={navigate} />
+            <StatusBadges
+              monthKey={monthKey}
+              monthTitle={monthTitle}
+              period={props.period}
+              run={props.runStatus === "PAID" ? "paid" : props.runStatus === "PAYING" ? "paying" : props.runStatus === "APPROVED" ? "approved" : !editable ? "readOnly" : "draft"}
+              can={{ close: perms.periodClose, reopen: perms.periodReopen }}
+              t={A}
+              onChanged={(message, tone) => {
+                toast(message, tone)
+                refresh()
+              }}
+            />
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">{t.sheet.description}</p>
         </div>

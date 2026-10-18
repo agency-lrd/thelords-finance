@@ -6,6 +6,7 @@ import { can, requirePageAccess } from "@/lib/auth/session"
 import { listFinancialAccounts } from "@/lib/data/accounts"
 import { listSheetDepartments } from "@/lib/data/sheet-admin"
 import { getProjectLedger } from "@/lib/data/project-ledger"
+import { periodInfo } from "@/lib/data/periods"
 import { getSheet } from "@/lib/data/sheet"
 import { getDictionary } from "@/lib/i18n/server"
 import { Decimal } from "@/lib/money"
@@ -37,6 +38,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
     showLedger ? getProjectLedger(user, month) : Promise.resolve(null),
   ])
   const showSalary = can(user, "salary:read")
+  const period = await periodInfo(user, month)
 
   // Department payroll for the contribution table: the approved amount where a row is confirmed,
   // otherwise the live calculation. Base-currency rows only (others need an FX rate first).
@@ -76,7 +78,10 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
         history: showSalary,
         structure: can(user, "structure:manage"),
         deleteEmployee: can(user, "employee:manage") && can(user, "salary:manage"),
+        periodClose: can(user, "period:close"),
+        periodReopen: can(user, "period:reopen"),
       }}
+      period={period as { status: "OPEN" | "CLOSING" | "CLOSED" | "LOCKED"; closedAt: string | null; closedBy: string | null; draftEntries: number }}
     />
     {ledger && (
       <ProjectLedger

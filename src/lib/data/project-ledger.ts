@@ -200,7 +200,7 @@ export async function addLedgerEntry(user: SessionUser, m: Month, kind: LedgerKi
   requireManage(user)
   return inTx(db, async (tx) => {
     const period = await ensurePeriod(tx, user.organizationId, m)
-    assertPeriodOpen(period, m)
+    assertPeriodOpen(period, m, user)
     const item = input.item.trim()
     if (!item || item.length > 200) throw new UserInputError("Enter the item (max 200 characters).")
     if (input.amount.lte(0)) throw new UserInputError("Amount must be greater than zero.")
@@ -251,7 +251,7 @@ export async function updateLedgerEntry(user: SessionUser, kind: LedgerKind, id:
   return inTx(db, async (tx) => {
     const row = await loadRow(tx, user, kind, id)
     const m = { year: row.period.year, month: row.period.month }
-    assertPeriodOpen(row.period, m)
+    assertPeriodOpen(row.period, m, user)
     const onlyNotes = Object.keys(input).every((k) => k === "notes")
     if (row.journalEntryId && !onlyNotes) throw new UserInputError("This row is confirmed. Un-confirm it to change it (a reversal is posted).")
 
@@ -312,7 +312,7 @@ export async function setLedgerConfirmed(user: SessionUser, kind: LedgerKind, id
   return inTx(db, async (tx) => {
     const row = await loadRow(tx, user, kind, id)
     const m = { year: row.period.year, month: row.period.month }
-    assertPeriodOpen(row.period, m)
+    assertPeriodOpen(row.period, m, user)
     const settled = kind === "income" ? new Decimal((row as { receivedAmount: Prisma.Decimal }).receivedAmount).gt(0) : row.status === "PAID"
     const dims = { departmentId: row.project.departmentId, projectId: row.projectId, clientId: row.project.clientId, categoryId: row.categoryId }
     const date = kind === "income" ? ((row as { invoiceDate: Date | null }).invoiceDate ?? monthStart(m)) : (row as { incurredDate: Date }).incurredDate
@@ -379,7 +379,7 @@ export async function recordSettlement(
     const base = toBase(delta, fx)
     const month = { year: input.date.getUTCFullYear(), month: input.date.getUTCMonth() + 1 }
     const period = await ensurePeriod(tx, user.organizationId, month)
-    assertPeriodOpen(period, month)
+    assertPeriodOpen(period, month, user)
     const dims = { departmentId: row.project.departmentId, projectId: row.projectId, clientId: row.project.clientId }
     const counter = await accountByCode(tx, user.organizationId, kind === "income" ? "1200" : "2000")
     await postJournal(tx, user, {

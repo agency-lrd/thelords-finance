@@ -198,7 +198,7 @@ export async function createTransaction(user: SessionUser, input: TransactionInp
     const { description } = await validate(tx, user, input)
     const m = monthOfDate(input.date)
     const period = await ensurePeriod(tx, user.organizationId, m)
-    assertPeriodOpen(period, m)
+    assertPeriodOpen(period, m, user)
     const { fx, base } = await amounts(tx, user, input)
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`transaction_number:${user.organizationId}`}, 0))`
     const last = await tx.transaction.aggregate({ where: { organizationId: user.organizationId }, _max: { number: true } })
@@ -228,7 +228,7 @@ export async function updateDraft(user: SessionUser, id: string, input: Transact
     const { description } = await validate(tx, user, input)
     const m = monthOfDate(input.date)
     const period = await ensurePeriod(tx, user.organizationId, m)
-    assertPeriodOpen(period, m)
+    assertPeriodOpen(period, m, user)
     const { fx, base } = await amounts(tx, user, input)
     await tx.transaction.update({ where: { id }, data: { ...dataOf(input, description, fx, base), periodId: period.id } })
     await audit(tx, user, "transaction.update", "transaction", id, { number: current.number })
@@ -356,7 +356,7 @@ export async function settleTransaction(user: SessionUser, id: string, input: { 
     const base = toBase(amount, new Decimal(t.fxRateToBase))
     const m = monthOfDate(input.date)
     const period = await ensurePeriod(tx, user.organizationId, m)
-    assertPeriodOpen(period, m)
+    assertPeriodOpen(period, m, user)
     const receivable = t.type === "REVENUE"
     const open = await accountByCode(tx, user.organizationId, receivable ? "1200" : "2000")
     const dims = { departmentId: t.departmentId, clientId: t.clientId, projectId: t.projectId }

@@ -25,9 +25,16 @@ export async function ensurePeriod(tx: Tx, organizationId: string, m: Month) {
   })
 }
 
-export function assertPeriodOpen(period: { status: string }, m: Month) {
+/**
+ * CLOSED and LOCKED months refuse changes (the database enforces this too). A month under review
+ * (CLOSING) can only be changed by people who close periods (period:close), as the schema intends.
+ */
+export function assertPeriodOpen(period: { status: string }, m: Month, user?: SessionUser) {
   if (period.status === "CLOSED" || period.status === "LOCKED") {
     throw new UserInputError(`${monthLabel(m)} is closed. Its records can no longer be changed.`)
+  }
+  if (period.status === "CLOSING" && user && !user.permissions.has("period:close")) {
+    throw new UserInputError(`${monthLabel(m)} is under review before closing. Only people who close periods can change it.`)
   }
 }
 
