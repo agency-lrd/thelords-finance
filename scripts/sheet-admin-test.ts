@@ -115,6 +115,9 @@ async function main() {
     })
 
     await step("11. a department with financial records: rename ok, delete refused, archive needs it emptied, merge keeps history", async () => {
+      // October starts from the approved September.
+      const boris = await prisma.employee.findFirstOrThrow({ where: { firstName: "Boris" } })
+      assert.deepEqual(await sheet.carryForwardEmployees(admin, oct, [{ employeeId }, { employeeId: boris.id }], prisma), { added: 2, skipped: 0 })
       await adminOps.renameDepartment(admin, deptId, "Creative Hub", prisma)
       await assert.rejects(() => adminOps.deleteDepartment(admin, deptId, prisma), /Archive it or merge/)
       await assert.rejects(() => adminOps.setSheetDepartmentArchived(admin, deptId, true, oct, prisma), /still has 1 employee/)

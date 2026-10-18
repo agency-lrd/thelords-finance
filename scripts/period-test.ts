@@ -33,30 +33,29 @@ async function main() {
       b = (await sheet.addSheetEmployee(admin, sep, { name: "Beta Two", departmentId: dept.id, fix: "2000", currency: "USD", hireDate: null }, prisma)).id
     })
 
-    await step("selecting another month shows that month's data; totals are per month", async () => {
+    await step("historical payroll is preserved: September approved, October carried over and changed", async () => {
       await sheet.updateSheetCell(admin, sep, a, "bonus", "300", prisma)
-      await sheet.updateSheetCell(admin, oct, b, "fix", "2500", prisma, "2000")
-      assert.equal(await total(sep), "3300") // 1,000 + 300 bonus + 2,000
-      assert.equal(await total(oct), "3500") // 1,000 + 2,500 (the September bonus is not in October)
-      assert.equal((await rowOf(sep, b)).fix, "2000", "a raise from October leaves September as it was")
-    })
-
-    await step("selecting another year: salary terms carry forward, month records do not", async () => {
-      const r = await rowOf(nextYear, b)
-      assert.equal(r.fix, "2500")
-      assert.equal(r.bonus, "0")
-      assert.equal(await total(nextYear), "3500")
-    })
-
-    await step("historical payroll is preserved: an approved month is fixed while later months change", async () => {
       await sheet.setRowConfirmed(admin, sep, a, true, prisma)
       await sheet.setRowConfirmed(admin, sep, b, true, prisma)
       await sheet.approveMonth(admin, sep, null, prisma)
-      const before = JSON.stringify((await sheet.getSheet(admin, sep, prisma)).rows.map((r) => [r.employeeId, r.approved]))
+      await sheet.carryForwardEmployees(admin, oct, [{ employeeId: a }, { employeeId: b }], prisma)
+      const before = JSON.stringify((await sheet.getSheet(admin, sep, prisma)).rows.map((r) => [r.employeeId, r.approved, r.fix]))
       await sheet.updateSheetCell(admin, oct, a, "fix", "1200", prisma, "1000")
-      assert.equal(JSON.stringify((await sheet.getSheet(admin, sep, prisma)).rows.map((r) => [r.employeeId, r.approved])), before)
+      assert.equal(JSON.stringify((await sheet.getSheet(admin, sep, prisma)).rows.map((r) => [r.employeeId, r.approved, r.fix])), before)
       assert.equal((await sheet.getSheet(admin, sep, prisma)).editable, false)
       await assert.rejects(() => sheet.updateSheetCell(admin, sep, a, "fix", "5000", prisma), /approved/)
+    })
+
+    await step("selecting another month shows that month's data; totals are per month", async () => {
+      await sheet.updateSheetCell(admin, oct, b, "fix", "2500", prisma, "2000")
+      assert.equal(await total(sep), "3300") // 1,000 + 300 bonus + 2,000
+      assert.equal(await total(oct), "3700") // 1,200 + 2,500 (the September bonus is not in October)
+      assert.equal((await rowOf(sep, b)).fix, "2000", "a raise from October leaves September as it was")
+    })
+
+    await step("selecting a later year: empty until employees are carried over month by month", async () => {
+      assert.equal((await sheet.getSheet(admin, nextYear, prisma)).rows.length, 0)
+      await assert.rejects(() => sheet.carryForwardEmployees(admin, nextYear, [{ employeeId: b }], prisma), /not approved/)
     })
 
     await step("period status: a new month is open; months are never closed automatically", async () => {

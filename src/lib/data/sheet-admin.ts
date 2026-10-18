@@ -96,6 +96,7 @@ export async function deleteEmployee(user: SessionUser, employeeId: string, conf
     await tx.salaryCondition.deleteMany({ where: { employeeId } })
     await tx.employeeAssignment.deleteMany({ where: { employeeId } })
     await tx.payoutWallet.deleteMany({ where: { employeeId } })
+    await tx.payrollMonthEmployee.deleteMany({ where: { employeeId } })
     await tx.employee.delete({ where: { id: employeeId } })
     await audit(tx, user, "employee.delete", "employee", employeeId, { name, checked: history })
   })

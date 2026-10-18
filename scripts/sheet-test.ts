@@ -142,6 +142,11 @@ async function main() {
       await rejects(() => sheet.setRowConfirmed(admin, sep, employeeId, false, prisma), /approved/)
     })
 
+    await step("October starts by carrying the employee over from the approved September", async () => {
+      assert.equal((await sheet.getSheet(admin, oct, prisma)).rows.length, 0, "a new month is empty until employees are carried over")
+      assert.deepEqual(await sheet.carryForwardEmployees(admin, oct, [{ employeeId }], prisma), { added: 1, skipped: 0 })
+    })
+
     await step("salary change in October keeps September's history", async () => {
       await sheet.updateSheetCell(admin, oct, employeeId, "fix", "1500", prisma)
       assert.equal((await row(oct)).fix, "1500")

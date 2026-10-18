@@ -570,7 +570,7 @@ model Organization {
   distributions      Distribution[]
   auditLogs          AuditLog[]
 
-  baseCurrencyRef  Currency          @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
+  baseCurrencyRef  Currency                 @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
   transactions     Transaction[]
   budgetLines      BudgetLine[]
   vaultCategories  VaultCategory[]
@@ -579,6 +579,7 @@ model Organization {
   aiMessages       AiMessage[]
   financialTarget  FinancialTarget?
   importBatches    TransactionImportBatch[]
+  monthEmployees   PayrollMonthEmployee[]
 
   @@map("organizations")
 }
@@ -596,29 +597,30 @@ model AppUser {
 
   employee              Employee?
   shareholder           Shareholder?
-  roleAssignments       UserRoleAssignment[]   @relation("AssignedUser")
-  grantedAssignments    UserRoleAssignment[]   @relation("GrantedBy")
+  roleAssignments       UserRoleAssignment[]     @relation("AssignedUser")
+  grantedAssignments    UserRoleAssignment[]     @relation("GrantedBy")
   closedPeriods         FinancialPeriod[]
   salaryApprovals       SalaryCondition[]
-  adjustmentsRequested  PayrollAdjustment[]    @relation("AdjustmentRequestedBy")
-  adjustmentsApproved   PayrollAdjustment[]    @relation("AdjustmentApprovedBy")
+  adjustmentsRequested  PayrollAdjustment[]      @relation("AdjustmentRequestedBy")
+  adjustmentsApproved   PayrollAdjustment[]      @relation("AdjustmentApprovedBy")
   payrollApprovals      PayrollApproval[]
-  payrollItemsConfirmed PayrollItem[]          @relation("PayrollItemConfirmedBy")
-  journalEntriesCreated JournalEntry[]         @relation("JournalCreatedBy")
-  journalEntriesPosted  JournalEntry[]         @relation("JournalPostedBy")
+  payrollItemsConfirmed PayrollItem[]            @relation("PayrollItemConfirmedBy")
+  journalEntriesCreated JournalEntry[]           @relation("JournalCreatedBy")
+  journalEntriesPosted  JournalEntry[]           @relation("JournalPostedBy")
   distributionApprovals Distribution[]
   kpiActualsRecorded    KpiActual[]
   auditLogs             AuditLog[]
-  transactionsCreated   Transaction[]          @relation("TransactionCreatedBy")
-  transactionsPosted    Transaction[]          @relation("TransactionPostedBy")
-  vaultCreated          VaultCredential[]      @relation("VaultCredentialCreatedBy")
-  vaultUpdated          VaultCredential[]      @relation("VaultCredentialUpdatedBy")
-  vaultGrants           VaultCredentialGrant[] @relation("VaultGrantUser")
-  vaultGrantsGiven      VaultCredentialGrant[] @relation("VaultGrantGrantedBy")
+  transactionsCreated   Transaction[]            @relation("TransactionCreatedBy")
+  transactionsPosted    Transaction[]            @relation("TransactionPostedBy")
+  vaultCreated          VaultCredential[]        @relation("VaultCredentialCreatedBy")
+  vaultUpdated          VaultCredential[]        @relation("VaultCredentialUpdatedBy")
+  vaultGrants           VaultCredentialGrant[]   @relation("VaultGrantUser")
+  vaultGrantsGiven      VaultCredentialGrant[]   @relation("VaultGrantGrantedBy")
   aiConversations       AiConversation[]
   aiMessages            AiMessage[]
   targetsUpdated        FinancialTarget[]
   importBatches         TransactionImportBatch[]
+  monthEmployeesAdded   PayrollMonthEmployee[]
 
   @@map("app_users")
 }
@@ -708,12 +710,14 @@ model FinancialPeriod {
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  closedBy           AppUser?            @relation(fields: [closedById], references: [id], onDelete: Restrict)
+  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  closedBy           AppUser?               @relation(fields: [closedById], references: [id], onDelete: Restrict)
   kpiTargets         KpiTarget[]
   kpiActuals         KpiActual[]
   payrollRuns        PayrollRun[]
   payrollAdjustments PayrollAdjustment[]
+  monthEmployees     PayrollMonthEmployee[] @relation("MonthRoster")
+  monthEmployeesNext PayrollMonthEmployee[] @relation("MonthRosterSource")
   projectIncome      ProjectIncome[]
   projectCosts       ProjectCost[]
   journalEntries     JournalEntry[]
@@ -879,6 +883,7 @@ model Employee {
   kpiActuals         KpiActual[]
   payrollItems       PayrollItem[]
   payrollAdjustments PayrollAdjustment[]
+  monthMemberships   PayrollMonthEmployee[]
   payoutWallets      PayoutWallet[]
   managedProjects    Project[]
   projectCosts       ProjectCost[]
@@ -1787,21 +1792,21 @@ model Transaction {
   createdAt                 DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                 DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization            Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  period                  FinancialPeriod    @relation(fields: [periodId], references: [id], onDelete: Restrict)
-  financialAccount        FinancialAccount?  @relation("TransactionAccount", fields: [financialAccountId], references: [id], onDelete: Restrict)
-  counterFinancialAccount FinancialAccount?  @relation("TransactionCounterAccount", fields: [counterFinancialAccountId], references: [id], onDelete: Restrict)
-  category                FinancialCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  debitAccount            LedgerAccount?     @relation("TransactionDebitAccount", fields: [debitAccountId], references: [id], onDelete: Restrict)
-  creditAccount           LedgerAccount?     @relation("TransactionCreditAccount", fields: [creditAccountId], references: [id], onDelete: Restrict)
-  department              Department?        @relation(fields: [departmentId], references: [id], onDelete: Restrict)
-  client                  Client?            @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  project                 Project?           @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  shareholder             Shareholder?       @relation(fields: [shareholderId], references: [id], onDelete: Restrict)
-  journalEntry            JournalEntry?      @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
-  createdBy               AppUser?           @relation("TransactionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  postedBy                AppUser?           @relation("TransactionPostedBy", fields: [postedById], references: [id], onDelete: Restrict)
-  currencyRef             Currency           @relation("TransactionCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period                  FinancialPeriod         @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  financialAccount        FinancialAccount?       @relation("TransactionAccount", fields: [financialAccountId], references: [id], onDelete: Restrict)
+  counterFinancialAccount FinancialAccount?       @relation("TransactionCounterAccount", fields: [counterFinancialAccountId], references: [id], onDelete: Restrict)
+  category                FinancialCategory?      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  debitAccount            LedgerAccount?          @relation("TransactionDebitAccount", fields: [debitAccountId], references: [id], onDelete: Restrict)
+  creditAccount           LedgerAccount?          @relation("TransactionCreditAccount", fields: [creditAccountId], references: [id], onDelete: Restrict)
+  department              Department?             @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  client                  Client?                 @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  project                 Project?                @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  shareholder             Shareholder?            @relation(fields: [shareholderId], references: [id], onDelete: Restrict)
+  journalEntry            JournalEntry?           @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  createdBy               AppUser?                @relation("TransactionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  postedBy                AppUser?                @relation("TransactionPostedBy", fields: [postedById], references: [id], onDelete: Restrict)
+  currencyRef             Currency                @relation("TransactionCurrency", fields: [currency], references: [code], onDelete: Restrict)
   importBatch             TransactionImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, number])
@@ -2077,4 +2082,39 @@ model TransactionImportBatch {
   @@index([organizationId, createdAt])
   @@index([organizationId, fileSha256])
   @@map("transaction_import_batches")
+}
+
+enum MonthMemberSource {
+  NEW // added in this month (new hire or added manually)
+  CARRIED // carried over from the immediately previous, approved month
+  LEGACY // existed before monthly rosters (taken from the month's payslips)
+
+  @@map("month_member_source")
+}
+
+/// Which employees are on a month's financial sheet. Employees move forward one month at a time,
+/// from the immediately previous month once its payroll is approved. On approval each row receives
+/// an immutable snapshot of what was approved (name, department, FIX, terms, KPI, amounts), so later
+/// months can change freely without altering approved history.
+model PayrollMonthEmployee {
+  id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId      String            @map("organization_id") @db.Uuid
+  periodId            String            @map("period_id") @db.Uuid
+  employeeId          String            @map("employee_id") @db.Uuid
+  source              MonthMemberSource
+  carriedFromPeriodId String?           @map("carried_from_period_id") @db.Uuid
+  snapshot            Json?
+  snapshotAt          DateTime?         @map("snapshot_at") @db.Timestamptz(6)
+  createdById         String?           @map("created_by_id") @db.Uuid
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period            FinancialPeriod  @relation("MonthRoster", fields: [periodId], references: [id], onDelete: Restrict)
+  carriedFromPeriod FinancialPeriod? @relation("MonthRosterSource", fields: [carriedFromPeriodId], references: [id], onDelete: Restrict)
+  employee          Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  createdBy         AppUser?         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([periodId, employeeId])
+  @@index([employeeId])
+  @@map("payroll_month_employees")
 }

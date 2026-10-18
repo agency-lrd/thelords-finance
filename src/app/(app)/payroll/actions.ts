@@ -108,6 +108,9 @@ const RU: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/Confirm the rows before approving the month/, "Сначала подтвердите расчёт сотрудников."],
   [/Employee is not on this month's sheet/, "Сотрудника нет в ведомости этого месяца."],
   [/No (\w+)→(\w+) rate for (.+?)\./, (m) => `Нет курса ${m[1]}→${m[2]} на ${m[3]}: добавьте курс, чтобы подтвердить.`],
+  [/^Payroll for (.+) is not approved yet/, (m) => `Ведомость за ${m[1]} ещё не утверждена. Сначала утвердите её, затем переносите сотрудников.`],
+  [/The employee is not on this month's sheet/, "Сотрудника нет в ведомости этого месяца — перенесите его из предыдущего месяца или добавьте."],
+  [/^(.+): no salary terms for this month/, (m) => `${m[1]}: нет условий оплаты на этот месяц — укажите FIX на странице сотрудника или добавьте его как нового.`],
 ]
 async function failRu(error: unknown) {
   const result = fail(error)
@@ -158,7 +161,7 @@ export async function carryForwardPreviewAction(monthKey: string) {
   }
 }
 
-export async function carryForwardAction(monthKey: string, items: CarryForwardItem[]) {
+export async function carryForwardAction(monthKey: string, items: CarryForwardItem[], addNew: string[] = []) {
   try {
     const user = await authorize("employee:manage")
     const clean = (Array.isArray(items) ? items : []).map((i) => ({
@@ -170,7 +173,7 @@ export async function carryForwardAction(monthKey: string, items: CarryForwardIt
       kpiRecurring: i.kpiRecurring === true,
       ratePct: typeof i.ratePct === "string" ? i.ratePct : null,
     }))
-    const result = await carryForwardEmployees(user, month(monthKey), clean)
+    const result = await carryForwardEmployees(user, month(monthKey), clean, undefined, { addNew: (Array.isArray(addNew) ? addNew : []).filter((x) => typeof x === "string") })
     revalidatePath("/employees")
     return { ...done(), result }
   } catch (error) {

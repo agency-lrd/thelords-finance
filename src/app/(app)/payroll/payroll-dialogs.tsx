@@ -128,11 +128,12 @@ export function ApprovalDialog({ monthKey, monthTitle, locale, t, canConfirm, to
 type CarryPreview = Extract<Awaited<ReturnType<typeof carryForwardPreviewAction>>, { ok: true }>["preview"]
 type Draft = { selected: boolean; fix: string; currency: string; departmentId: string; ratePct: string; kpiTarget: string; kpiRecurring: boolean }
 
-/** Manual carry-forward from the previous month with editable terms. */
-export function CarryForwardDialog({ monthKey, monthTitle, departments, locale, t, toast, onChanged, onClose }: { monthKey: string; monthTitle: string; departments: { id: string; name: string }[]; locale: Locale; t: SheetAdminTexts; toast: Toast; onChanged: () => void; onClose: () => void }) {
+/** Moves employees from the immediately previous, approved month (preview, choose, edit, confirm). */
+export function CarryForwardDialog({ monthKey, departments, locale, t, toast, onChanged, onClose }: { monthKey: string; monthTitle: string; departments: { id: string; name: string }[]; locale: Locale; t: SheetAdminTexts; toast: Toast; onChanged: () => void; onClose: () => void }) {
   const P = t.payroll
   const [preview, setPreview] = useState<CarryPreview | null>(null)
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+  const [addNew, setAddNew] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     let alive = true
@@ -140,16 +141,19 @@ export function CarryForwardDialog({ monthKey, monthTitle, departments, locale, 
       if (!alive) return
       if (!r.ok) return toast(r.message, "error")
       setPreview(r.preview)
-      setDrafts(Object.fromEntries(r.preview.employees.map((e) => [e.employeeId, { selected: !e.present, fix: e.fix ?? "", currency: e.currency, departmentId: e.departmentId ?? "", ratePct: e.ratePct ?? "", kpiTarget: e.kpiTarget ?? "", kpiRecurring: e.kpiRecurring }])))
+      setDrafts(Object.fromEntries(r.preview.employees.map((e) => [e.employeeId, { selected: r.preview.previousApproved && !e.present && !e.terminated, fix: e.fix ?? "", currency: e.currency, departmentId: e.departmentId ?? "", ratePct: e.ratePct ?? "", kpiTarget: e.kpiTarget ?? "", kpiRecurring: e.kpiRecurring }])))
     })
     return () => {
       alive = false
     }
   }, [monthKey, toast])
   const set = (id: string, patch: Partial<Draft>) => setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }))
-  const chosen = preview?.employees.filter((e) => drafts[e.employeeId]?.selected) ?? []
+  const selectable = (e: CarryPreview["employees"][number]) => !!preview?.previousApproved && !e.present && !e.terminated
+  const chosen = preview?.employees.filter((e) => selectable(e) && drafts[e.employeeId]?.selected) ?? []
   const [py, pm] = (preview?.previous ?? monthKey).split("-").map(Number)
   const prevTitle = new Date(Date.UTC(py, pm - 1, 1)).toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { month: "long", year: "numeric", timeZone: "UTC" }).replace(" г.", "")
+  const count = chosen.length + addNew.size
+  const L = locale === "ru" ? { employee: "Сотрудник", department: "Отдел", since: "с" } : { employee: "Employee", department: "Department", since: "since" }
 
   return (
     <Panel title={fill(P.carryTitle, { month: prevTitle })} onClose={onClose} wide>
@@ -158,54 +162,91 @@ export function CarryForwardDialog({ monthKey, monthTitle, departments, locale, 
         <Loader2 className="size-4 animate-spin text-muted-foreground" />
       ) : (
         <>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <Button size="sm" variant="outline" onClick={() => preview.employees.forEach((e) => set(e.employeeId, { selected: true }))}>{P.selectAll}</Button>
-            <Button size="sm" variant="ghost" onClick={() => preview.employees.forEach((e) => set(e.employeeId, { selected: !e.present }))}>{P.selectMissing}</Button>
-          </div>
-          <div className="max-h-[50vh] overflow-auto rounded-xl border border-border/60">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-[#110d12] text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                <tr>
-                  <th className="px-2 py-1.5" />
-                  <th className="px-2 py-1.5 text-left">{locale === "ru" ? "Сотрудник" : "Employee"}</th>
-                  <th className="px-2 py-1.5 text-left">{locale === "ru" ? "Отдел" : "Department"}</th>
-                  <th className="px-2 py-1.5 text-right">FIX</th>
-                  <th className="px-2 py-1.5 text-right">%</th>
-                  <th className="px-2 py-1.5 text-right">KPI Profit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {preview.employees.map((e) => {
-                  const d = drafts[e.employeeId]
-                  if (!d) return null
-                  return (
-                    <tr key={e.employeeId} className="border-t border-border/40 align-middle">
-                      <td className="px-2 py-1"><input type="checkbox" aria-label={e.name} checked={d.selected} onChange={(x) => set(e.employeeId, { selected: x.target.checked })} className="accent-[var(--primary)]" /></td>
-                      <td className="px-2 py-1">
-                        <p className="font-medium">{e.name}</p>
-                        <p className={cn("text-[10px]", e.present ? "text-muted-foreground" : "text-amber-300")}>{e.present ? P.present : P.missing} · {locale === "ru" ? "с" : "since"} {e.hireDate}</p>
-                      </td>
-                      <td className="px-2 py-1">
-                        <Select value={d.departmentId} onChange={(x) => set(e.employeeId, { departmentId: x.target.value })} className="h-7 w-40 text-xs">
-                          {departments.map((dep) => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
-                        </Select>
-                      </td>
-                      <td className="px-2 py-1 text-right"><Input value={d.fix} onChange={(x) => set(e.employeeId, { fix: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{d.currency}</span></td>
-                      <td className="px-2 py-1 text-right">{e.model !== "NONE" ? <Input value={d.ratePct} onChange={(x) => set(e.employeeId, { ratePct: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-16 text-right font-mono" /> : <span className="text-muted-foreground">—</span>}</td>
-                      <td className="px-2 py-1 text-right">
-                        <Input value={d.kpiTarget} onChange={(x) => set(e.employeeId, { kpiTarget: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" />
-                        <label className="flex items-center justify-end gap-1 text-[10px] text-muted-foreground"><input type="checkbox" checked={d.kpiRecurring} onChange={(x) => set(e.employeeId, { kpiRecurring: x.target.checked })} className="accent-[var(--primary)]" /> {P.recurring}</label>
-                      </td>
+          {!preview.previousApproved && (
+            <p role="alert" className="flex items-start gap-2 rounded-xl border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              {fill(P.notApproved, { month: prevTitle })}
+            </p>
+          )}
+          {preview.employees.length > 0 && (
+            <>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <Button size="sm" variant="outline" disabled={!preview.previousApproved} onClick={() => preview.employees.forEach((e) => set(e.employeeId, { selected: selectable(e) }))}>{P.selectAll}</Button>
+                <Button size="sm" variant="ghost" onClick={() => preview.employees.forEach((e) => set(e.employeeId, { selected: false }))}>{t.cancel}</Button>
+              </div>
+              <div className="max-h-[45vh] overflow-auto rounded-xl border border-border/60">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-[#110d12] text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                    <tr>
+                      <th className="px-2 py-1.5" />
+                      <th className="px-2 py-1.5 text-left">{L.employee}</th>
+                      <th className="px-2 py-1.5 text-left">{L.department}</th>
+                      <th className="px-2 py-1.5 text-right">FIX</th>
+                      <th className="px-2 py-1.5 text-right">%</th>
+                      <th className="px-2 py-1.5 text-right">KPI Profit</th>
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody>
+                    {preview.employees.map((e) => {
+                      const d = drafts[e.employeeId]
+                      if (!d) return null
+                      const can = selectable(e)
+                      return (
+                        <tr key={e.employeeId} className={cn("border-t border-border/40 align-middle", !can && "opacity-60")}>
+                          <td className="px-2 py-1"><input type="checkbox" aria-label={e.name} disabled={!can} checked={can && d.selected} onChange={(x) => set(e.employeeId, { selected: x.target.checked })} className="accent-[var(--primary)]" /></td>
+                          <td className="px-2 py-1">
+                            <p className="font-medium">{e.name}</p>
+                            <p className={cn("text-[10px]", e.present || e.terminated ? "text-muted-foreground" : "text-amber-300")}>
+                              {e.present ? P.present : e.terminated ? P.terminated : P.missing} · {L.since} {e.hireDate}
+                            </p>
+                          </td>
+                          <td className="px-2 py-1">
+                            <Select disabled={!can} value={d.departmentId} onChange={(x) => set(e.employeeId, { departmentId: x.target.value })} className="h-7 w-40 text-xs">
+                              {departments.map((dep) => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
+                            </Select>
+                          </td>
+                          <td className="px-2 py-1 text-right"><Input disabled={!can} value={d.fix} onChange={(x) => set(e.employeeId, { fix: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{d.currency}</span></td>
+                          <td className="px-2 py-1 text-right">{e.model !== "NONE" ? <Input disabled={!can} value={d.ratePct} onChange={(x) => set(e.employeeId, { ratePct: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-16 text-right font-mono" /> : <span className="text-muted-foreground">—</span>}</td>
+                          <td className="px-2 py-1 text-right">
+                            <Input disabled={!can} value={d.kpiTarget} onChange={(x) => set(e.employeeId, { kpiTarget: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" />
+                            <label className="flex items-center justify-end gap-1 text-[10px] text-muted-foreground"><input type="checkbox" disabled={!can} checked={d.kpiRecurring} onChange={(x) => set(e.employeeId, { kpiRecurring: x.target.checked })} className="accent-[var(--primary)]" /> {P.recurring}</label>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          {preview.others.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-xl border border-border/60 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{P.others}</p>
+              <p className="text-[11px] text-muted-foreground">{P.othersHint}</p>
+              {preview.others.map((o) => (
+                <label key={o.employeeId} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={addNew.has(o.employeeId)}
+                    onChange={(x) =>
+                      setAddNew((s) => {
+                        const next = new Set(s)
+                        if (x.target.checked) next.add(o.employeeId)
+                        else next.delete(o.employeeId)
+                        return next
+                      })
+                    }
+                    className="accent-[var(--primary)]"
+                  />
+                  {o.name} <span className="text-[11px] text-muted-foreground">{L.since} {o.hireDate}</span>
+                </label>
+              ))}
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onClose}>{t.cancel}</Button>
             <Button
-              disabled={busy || chosen.length === 0}
+              disabled={busy || count === 0}
               onClick={async () => {
                 setBusy(true)
                 const items = chosen.map((e) => {
@@ -215,23 +256,22 @@ export function CarryForwardDialog({ monthKey, monthTitle, departments, locale, 
                     fix: d.fix && normalizeNumber(d.fix) !== e.fix ? (normalizeNumber(d.fix) ?? d.fix) : null,
                     currency: d.currency !== e.currency ? d.currency : null,
                     departmentId: d.departmentId || null,
-                    kpiTarget: d.kpiTarget && (normalizeNumber(d.kpiTarget) !== e.kpiTarget || d.kpiRecurring !== e.kpiRecurring) ? (normalizeNumber(d.kpiTarget) ?? d.kpiTarget) : null,
+                    kpiTarget: d.kpiTarget ? (normalizeNumber(d.kpiTarget) ?? d.kpiTarget) : null,
                     kpiRecurring: d.kpiRecurring,
                     ratePct: d.ratePct && d.ratePct !== e.ratePct ? d.ratePct : null,
                   }
                 })
-                const r = await carryForwardAction(monthKey, items)
+                const r = await carryForwardAction(monthKey, items, [...addNew])
                 setBusy(false)
                 if (!r.ok) return toast(r.message, "error")
-                toast(fill(P.carryDone, { added: r.result.added, updated: r.result.updated }))
+                toast(fill(P.carryDone, { added: r.result.added, skipped: r.result.skipped }))
                 onChanged()
                 onClose()
               }}
             >
-              {busy ? <Loader2 className="animate-spin" /> : null} {fill(P.carryButton, { n: chosen.length })}
+              {busy ? <Loader2 className="animate-spin" /> : null} {fill(P.carryButton, { n: count })}
             </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground">{monthTitle}</p>
         </>
       )}
     </Panel>

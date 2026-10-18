@@ -672,6 +672,17 @@ export function FinancialSheet(props: Props) {
         </div>
       </div>
 
+      {rows.length === 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
+          <span>{A.payroll.empty}</span>
+          {editable && perms.employee && perms.salary && (
+            <Button size="sm" onClick={() => setPanel("carry")}>
+              <Copy /> {A.payroll.carry}
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Bulk actions for a multi-row selection (Shift+click or Shift+arrows) */}
       {selectedRows.length > 1 && editable && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
