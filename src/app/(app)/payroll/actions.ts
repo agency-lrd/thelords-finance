@@ -16,6 +16,11 @@ import {
   setRowConfirmed,
   SheetConflictError,
   updateSheetCell,
+  approvalPreview,
+  carryForwardEmployees,
+  carryForwardPreview,
+  type CarryForwardItem,
+  type ChangeScope,
   type RuleConfig,
   type SheetField,
 } from "@/lib/data/sheet"
@@ -34,6 +39,7 @@ import { setPeriodStatus, type PeriodAction } from "@/lib/data/periods"
 import { addLedgerEntry, deleteLedgerEntry, recordSettlement, setLedgerConfirmed, updateLedgerEntry } from "@/lib/data/project-ledger"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { Decimal } from "@/lib/money"
+import { getLocale } from "@/lib/i18n/server"
 import { parseMonth } from "@/lib/period"
 
 export type CellResult = { ok: true; unconfirmed?: boolean } | { ok: false; message: string; conflict?: { current: string } }
@@ -87,23 +93,114 @@ export async function setTermsAction(monthKey: string, employeeId: string, confi
   }
 }
 
+// Payroll errors from the data layer, in Russian for the sheet (the data layer reports in English).
+const RU: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
+  [/You do not have permission to confirm payroll/, "У вашей роли нет права подтверждать расчёт зарплаты (payroll:prepare)."],
+  [/You do not have permission to approve payroll/, "У вашей роли нет права утверждать месяц (payroll:approve)."],
+  [/^(.+): enter FIX before confirming/, (m) => `${m[1]}: сначала укажите FIX.`],
+  [/^(.+): the salary change is waiting for approval/, (m) => `${m[1]}: изменение оклада ждёт утверждения (salary:approve).`],
+  [/^(.+): a bonus or deduction is waiting for approval/, (m) => `${m[1]}: бонус или удержание ждёт утверждения.`],
+  [/^(.+): deductions exceed earnings/, (m) => `${m[1]}: удержания больше начислений.`],
+  [/is approved; its sheet can no longer be changed/, "Месяц уже утверждён — ведомость за него больше не меняется."],
+  [/is closed\. Its records can no longer be changed/, "Месяц закрыт — изменения недоступны."],
+  [/is under review before closing/, "Месяц на проверке — изменения доступны только ответственным за закрытие."],
+  [/^(\d+) row\(s\) are not confirmed or changed after confirmation: (.+)$/, (m) => `Не подтверждено или изменено после подтверждения: ${m[1]} — ${m[2]}.`],
+  [/Confirm the rows before approving the month/, "Сначала подтвердите расчёт сотрудников."],
+  [/Employee is not on this month's sheet/, "Сотрудника нет в ведомости этого месяца."],
+  [/No (\w+)→(\w+) rate for (.+?)\./, (m) => `Нет курса ${m[1]}→${m[2]} на ${m[3]}: добавьте курс, чтобы подтвердить.`],
+]
+async function failRu(error: unknown) {
+  const result = fail(error)
+  if ((await getLocale()) !== "ru") return result
+  for (const [pattern, text] of RU) {
+    const m = pattern.exec(result.message)
+    if (m) return { ok: false as const, message: typeof text === "string" ? text : text(m) }
+  }
+  return result
+}
+
+/** Confirms (accepts the month's calculation) or un-confirms one employee. Not a payment. */
 export async function confirmRowAction(monthKey: string, employeeId: string, confirmed: boolean): Promise<CellResult> {
   try {
     const user = await authorize("payroll:prepare")
-    await setRowConfirmed(user, month(monthKey), employeeId, confirmed)
+    await setRowConfirmed(user, month(monthKey), employeeId, confirmed === true)
     return done()
   } catch (error) {
-    return fail(error)
+    return failRu(error)
   }
 }
 
-export async function approveMonthAction(monthKey: string): Promise<CellResult> {
+export async function approveMonthAction(monthKey: string, comment?: string | null): Promise<CellResult> {
   try {
     const user = await authorize("payroll:approve")
-    await approveMonth(user, month(monthKey), null)
+    await approveMonth(user, month(monthKey), typeof comment === "string" && comment.trim() ? comment.trim().slice(0, 500) : null)
+    revalidatePath("/pnl")
+    revalidatePath("/cash-flow")
     return done()
   } catch (error) {
-    return fail(error)
+    return failRu(error)
+  }
+}
+
+export async function approvalPreviewAction(monthKey: string) {
+  try {
+    return { ok: true as const, preview: await approvalPreview(await authorize("payroll:read"), month(monthKey)) }
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+export async function carryForwardPreviewAction(monthKey: string) {
+  try {
+    return { ok: true as const, preview: await carryForwardPreview(await authorize("payroll:read"), month(monthKey)) }
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+export async function carryForwardAction(monthKey: string, items: CarryForwardItem[]) {
+  try {
+    const user = await authorize("employee:manage")
+    const clean = (Array.isArray(items) ? items : []).map((i) => ({
+      employeeId: String(i.employeeId),
+      fix: typeof i.fix === "string" ? i.fix : null,
+      currency: typeof i.currency === "string" ? i.currency : null,
+      departmentId: typeof i.departmentId === "string" ? i.departmentId : null,
+      kpiTarget: typeof i.kpiTarget === "string" ? i.kpiTarget : null,
+      kpiRecurring: i.kpiRecurring === true,
+      ratePct: typeof i.ratePct === "string" ? i.ratePct : null,
+    }))
+    const result = await carryForwardEmployees(user, month(monthKey), clean)
+    revalidatePath("/employees")
+    return { ...done(), result }
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+/** Salary conditions from the "Edit conditions" dialog: FIX, currency and KPI target with a scope. */
+export async function editConditionsAction(
+  monthKey: string,
+  employeeId: string,
+  input: { fix: string | null; currency: string | null; kpiTarget: string | null; scope: string; expected: { fix: string; currency: string; kpiTarget: string } },
+): Promise<CellResult> {
+  try {
+    const scope: ChangeScope = input.scope === "month" ? "month" : "future"
+    const m = month(monthKey)
+    let unconfirmed = false
+    if (input.fix !== null && input.fix !== input.expected.fix) {
+      unconfirmed = (await updateSheetCell(await authorize("salary:manage"), m, employeeId, "fix", input.fix, undefined, input.expected.fix, scope)).unconfirmed || unconfirmed
+    }
+    if (input.currency !== null && input.currency !== input.expected.currency) {
+      unconfirmed = (await updateSheetCell(await authorize("salary:manage"), m, employeeId, "currency", input.currency, undefined, input.expected.currency, scope)).unconfirmed || unconfirmed
+    }
+    if (input.kpiTarget !== null && input.kpiTarget !== input.expected.kpiTarget) {
+      unconfirmed = (await updateSheetCell(await authorize("kpi:manage"), m, employeeId, "kpiTarget", input.kpiTarget, undefined, input.expected.kpiTarget, scope)).unconfirmed || unconfirmed
+    }
+    return done({ unconfirmed })
+  } catch (error) {
+    if (error instanceof SheetConflictError) return { ok: false, message: error.message, conflict: { current: error.current } }
+    return failRu(error)
   }
 }
 

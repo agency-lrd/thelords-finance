@@ -1080,6 +1080,8 @@ model KpiTarget {
   targetValue     Decimal  @map("target_value") @db.Decimal(24, 8)
   stretchValue    Decimal? @map("stretch_value") @db.Decimal(24, 8)
   weight          Decimal? @db.Decimal(12, 8)
+  /// Recurring targets carry forward to later months that have no target of their own.
+  recurring       Boolean  @default(false)
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

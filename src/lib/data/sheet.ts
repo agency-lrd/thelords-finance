@@ -56,6 +56,17 @@ function modelOf(rule: { method: CalculationMethod; metricBasis: MetricBasis }):
 }
 
 const overlapsMonth = (m: Month) => ({ validFrom: { lte: monthEnd(m) }, OR: [{ validTo: null }, { validTo: { gt: monthStart(m) } }] })
+
+/**
+ * The KPI target that applies to a month: the month's own target, otherwise the latest earlier target
+ * marked recurring. The sheet and the confirmation snapshot both use this, so they always agree.
+ */
+const targetForMonth = (kpiDefinitionId: string, m: Month) => ({
+  where: { kpiDefinitionId, OR: [{ period: { year: m.year, month: m.month } }, { recurring: true, period: { startDate: { lt: monthStart(m) } } }] },
+  orderBy: { period: { startDate: "desc" as const } },
+  take: 1,
+  include: { period: { select: { year: true, month: true } } },
+})
 const str = (value: Prisma.Decimal | Decimal | null | undefined) => (value === null || value === undefined ? null : new Decimal(value).toString())
 
 async function profitKpi(db: Db | Tx, organizationId: string) {
@@ -97,6 +108,8 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
           hireDate: { lte: end },
           AND: [{ OR: [{ terminationDate: null }, { terminationDate: { gte: start } }] }],
         },
+        // Left before this month, but something is still to settle in it (e.g. a final bonus or deduction).
+        { archivedAt: null, hireDate: { lte: end }, payrollAdjustments: { some: { period: { year: m.year, month: m.month }, status: { in: ["PENDING", "APPROVED", "APPLIED"] } } } },
         ...(run ? [{ payrollItems: { some: { payrollRunId: run.id } } }] : []),
       ],
     },
@@ -108,7 +121,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
         include: { rule: { include: { tiers: { orderBy: { sortOrder: "asc" } } } } },
         orderBy: { validFrom: "desc" },
       },
-      kpiTargets: { where: { kpiDefinitionId: kpi.id, period: { year: m.year, month: m.month } } },
+      kpiTargets: targetForMonth(kpi.id, m),
       kpiActuals: { where: { kpiDefinitionId: kpi.id, period: { year: m.year, month: m.month } } },
       payrollAdjustments: { where: { period: { year: m.year, month: m.month }, status: { in: ["PENDING", "APPROVED", "APPLIED"] } } },
       payoutWallets: { where: { archivedAt: null }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }], take: 1 },
@@ -122,7 +135,9 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
     const salary = e.salaryConditions[0] ?? null
     const assignment = e.assignments[0] ?? null
     const rules = e.compensationScopes.map((s) => s.rule)
-    const target = e.kpiTargets[0]?.targetValue ?? null
+    const targetRecord = e.kpiTargets[0] ?? null
+    const target = targetRecord?.targetValue ?? null
+    const targetInherited = !!targetRecord && (targetRecord.period.year !== m.year || targetRecord.period.month !== m.month)
     const actual = e.kpiActuals[0]?.actualValue ?? null
     const approvedAdjustments = e.payrollAdjustments.filter((a) => a.status !== "PENDING")
     const pending = e.payrollAdjustments.filter((a) => a.status === "PENDING")
@@ -163,6 +178,10 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       terms: rules.map((r) => describeRule(ruleInput(r))).join(" + ") || null,
       rule: rules[0] ? ruleConfigOf(rules[0]) : ({ model: "NONE" } as RuleConfig),
       kpiTarget: str(target),
+      /** The target comes from an earlier month (recurring), not set for this month. */
+      kpiTargetInherited: targetInherited,
+      kpiTargetRecurring: targetRecord?.recurring ?? false,
+      terminationDate: e.terminationDate ? e.terminationDate.toISOString().slice(0, 10) : null,
       kpiActual: str(actual),
       variable: calc.variable.toString(),
       bonus: bonus.toString(),
@@ -371,7 +390,7 @@ function sameValue(field: SheetField, a: string, b: string) {
  * changed since (another user, another tab), the edit is refused with SheetConflictError instead of
  * silently overwriting it. The employee row is locked for the duration, so concurrent edits queue.
  */
-export async function updateSheetCell(user: SessionUser, m: Month, employeeId: string, field: SheetField, raw: string, db: Db = prisma, expected?: string | null) {
+export async function updateSheetCell(user: SessionUser, m: Month, employeeId: string, field: SheetField, raw: string, db: Db = prisma, expected?: string | null, scope?: ChangeScope) {
   if (!user.permissions.has(FIELD_PERMISSION[field])) throw new UserInputError("You do not have permission to edit this column.")
   return inTx(db, async (tx) => {
     const employee = await tx.employee.findFirst({ where: { id: employeeId, organizationId: user.organizationId } })
@@ -423,11 +442,11 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
         break
       case "fix":
       case "currency":
-        await setSalaryFrom(tx, user, employee, m, field === "fix" ? { amount: parseCellAmount(value, "FIX", { allowEmpty: false }) } : { currency: value })
+        await setSalaryFrom(tx, user, employee, m, field === "fix" ? { amount: parseCellAmount(value, "FIX", { allowEmpty: false }) } : { currency: value }, scope)
         break
       case "kpiTarget":
       case "kpiActual":
-        await setKpi(tx, user, employeeId, period.id, field, parseCellAmount(value, field === "kpiTarget" ? "KPI Profit" : "KPI Fact", { allowNegative: field === "kpiActual" }))
+        await setKpi(tx, user, employeeId, period.id, field, parseCellAmount(value, field === "kpiTarget" ? "KPI Profit" : "KPI Fact", { allowNegative: field === "kpiActual" }), field === "kpiTarget" && scope ? scope === "future" : undefined)
         break
       case "bonus":
       case "deduction":
@@ -438,7 +457,14 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
         break
     }
 
-    const unconfirmed = MONEY_FIELDS.includes(field) ? await unconfirm(tx, run?.id, employeeId) : false
+    // A confirmed row needs confirming again only if its result changed (department and currency are
+    // part of the payslip snapshot, so they always do).
+    let unconfirmed = false
+    if (MONEY_FIELDS.includes(field)) {
+      const after = (await getSheet(user, m, tx, { employeeId })).rows[0]
+      const unchanged = after?.approved != null && field !== "department" && field !== "currency" && new Decimal(after.calculated).eq(after.approved)
+      if (!unchanged) unconfirmed = await unconfirm(tx, run?.id, employeeId)
+    }
     await audit(tx, user, `sheet.update.${field}`, "employee", employeeId, {
       month: `${m.year}-${String(m.month).padStart(2, "0")}`,
       // Wallet details are never written to the audit log.
@@ -450,12 +476,22 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
 }
 
 /** Effective-dated salary: the change applies from the month's first day until the next recorded change. */
+export type ChangeScope = "month" | "future"
+
+/**
+ * Effective-dated salary change from the month's first day.
+ *  - "future" (default): applies until the next recorded change;
+ *  - "month": applies to this month only; the previous terms continue from the next month.
+ * A change never reaches into a later month whose payroll is already approved: it stops there and the
+ * terms that month was approved with continue, so approved history is never rewritten.
+ */
 async function setSalaryFrom(
   tx: Tx,
   user: SessionUser,
   employee: { id: string },
   m: Month,
   change: { amount?: Decimal | null; currency?: string },
+  scope: ChangeScope = "future",
 ) {
   const start = monthStart(m)
   if (change.currency && !["USD", "EUR", "GBP", "USDT"].includes(change.currency)) throw new UserInputError("Choose a supported currency.")
@@ -468,31 +504,49 @@ async function setSalaryFrom(
   if (amount === null) throw new UserInputError("Enter FIX first.")
   const currency = change.currency ?? current?.currency ?? user.baseCurrency
 
-  const usedElsewhere = current
-    ? await tx.payrollItem.count({ where: { salaryConditionId: current.id, payrollRun: { period: { NOT: { year: m.year, month: m.month } } } } })
-    : 0
+  // Where the current terms end today, and where the new terms must stop.
+  const oldEnd = current ? (current.validTo ?? next?.validFrom ?? null) : (next?.validFrom ?? null)
+  const lockedRun = await tx.payrollRun.findFirst({
+    where: { organizationId: user.organizationId, status: { in: ["SUBMITTED", "APPROVED", "PAYING", "PAID"] }, period: { startDate: { gt: start } } },
+    orderBy: { period: { startDate: "asc" } },
+    select: { period: { select: { startDate: true } } },
+  })
+  let newEnd = oldEnd
+  const cap = scope === "month" ? new Date(Date.UTC(m.year, m.month, 1)) : (lockedRun?.period.startDate ?? null)
+  if (cap && (newEnd === null || cap < newEnd)) newEnd = cap
+  const sameTerms = current && new Decimal(current.baseAmount).eq(amount) && current.currency === currency
+  if (sameTerms) return
 
-  if (current && current.validFrom.getTime() === start.getTime() && usedElsewhere === 0) {
-    // The record starts this month and no other month uses it: correct it in place.
-    await tx.salaryCondition.update({
-      where: { id: current.id },
-      data: { baseAmount: amount.toString(), currency, approvedById: approved ? user.id : null, approvedAt: approved ? new Date() : null, changeReason: "Changed on the financial sheet" },
-    })
-    return
+  const terms = { payBasis: current?.payBasis ?? ("MONTHLY" as const), standardHoursPerMonth: current?.standardHoursPerMonth }
+  const approval = { approvedById: approved ? user.id : null, approvedAt: approved ? new Date() : null }
+  const continueOld = current && newEnd !== null && (oldEnd === null || newEnd < oldEnd)
+
+  if (current && current.validFrom.getTime() === start.getTime()) {
+    if (!continueOld) {
+      // The record starts this month and keeps its end: correct it in place.
+      await tx.salaryCondition.update({ where: { id: current.id }, data: { baseAmount: amount.toString(), currency, ...approval, changeReason: "Changed on the financial sheet" } })
+      return
+    }
+    // Keep the old terms after this change: move the record's start, then add the new terms before it.
+    await tx.salaryCondition.update({ where: { id: current.id }, data: { validFrom: newEnd! } })
+  } else if (current) {
+    await tx.salaryCondition.update({ where: { id: current.id }, data: { validTo: start } })
+    if (continueOld) {
+      await tx.salaryCondition.create({
+        data: { employeeId: employee.id, ...terms, baseAmount: current.baseAmount, currency: current.currency, validFrom: newEnd!, validTo: oldEnd, changeReason: `Continues after the ${monthLabel(m)} change`, approvedById: current.approvedById, approvedAt: current.approvedAt },
+      })
+    }
   }
-  if (current) await tx.salaryCondition.update({ where: { id: current.id }, data: { validTo: start } })
   await tx.salaryCondition.create({
     data: {
       employeeId: employee.id,
-      payBasis: current?.payBasis ?? "MONTHLY",
+      ...terms,
       baseAmount: amount.toString(),
       currency,
-      standardHoursPerMonth: current?.standardHoursPerMonth,
       validFrom: start,
-      validTo: current?.validTo ?? next?.validFrom ?? null,
-      changeReason: current ? `Changed on the financial sheet from ${monthLabel(m)}` : "Set on the financial sheet",
-      approvedById: approved ? user.id : null,
-      approvedAt: approved ? new Date() : null,
+      validTo: newEnd,
+      changeReason: current ? `Changed on the financial sheet from ${monthLabel(m)}${scope === "month" ? " (this month only)" : ""}` : "Set on the financial sheet",
+      ...approval,
     },
   })
 }
@@ -515,13 +569,27 @@ async function setDepartmentFrom(tx: Tx, user: SessionUser, employeeId: string, 
   })
 }
 
-async function setKpi(tx: Tx, user: SessionUser, employeeId: string, periodId: string, field: "kpiTarget" | "kpiActual", value: Decimal | null) {
+/**
+ * KPI target or actual for one month. A target can be recurring (it then also applies to later months
+ * without a target of their own); when `recurring` is not given, the month keeps the recurrence it had
+ * (its own target's, or the inherited target's). KPI actuals always belong to their month only.
+ */
+async function setKpi(tx: Tx, user: SessionUser, employeeId: string, periodId: string, field: "kpiTarget" | "kpiActual", value: Decimal | null, recurring?: boolean) {
   const kpi = await profitKpi(tx, user.organizationId)
   const key = { kpiDefinitionId_periodId_scopeKey: { kpiDefinitionId: kpi.id, periodId, scopeKey: `EMPLOYEE:${employeeId}` } }
   const base = { organizationId: user.organizationId, kpiDefinitionId: kpi.id, periodId, scope: "EMPLOYEE" as const, scopeKey: `EMPLOYEE:${employeeId}`, employeeId }
   if (field === "kpiTarget") {
     if (value === null) await tx.kpiTarget.deleteMany({ where: { kpiDefinitionId: kpi.id, periodId, scopeKey: base.scopeKey } })
-    else await tx.kpiTarget.upsert({ where: key, create: { ...base, targetValue: value.toString() }, update: { targetValue: value.toString() } })
+    else {
+      let repeat = recurring
+      if (repeat === undefined) {
+        const own = await tx.kpiTarget.findUnique({ where: key })
+        const period = await tx.financialPeriod.findUniqueOrThrow({ where: { id: periodId }, select: { startDate: true } })
+        const inherited = own ? null : await tx.kpiTarget.findFirst({ where: { kpiDefinitionId: kpi.id, employeeId, recurring: true, period: { startDate: { lt: period.startDate } } } })
+        repeat = own?.recurring ?? !!inherited
+      }
+      await tx.kpiTarget.upsert({ where: key, create: { ...base, targetValue: value.toString(), recurring: repeat }, update: { targetValue: value.toString(), recurring: repeat } })
+    }
   } else {
     if (value === null) await tx.kpiActual.deleteMany({ where: { kpiDefinitionId: kpi.id, periodId, scopeKey: base.scopeKey } })
     else
@@ -769,7 +837,7 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
         assignments: { where: { isPrimary: true, ...overlapsMonth(m) }, orderBy: { validFrom: "desc" }, take: 1 },
         salaryConditions: { where: overlapsMonth(m), orderBy: { validFrom: "desc" }, take: 1 },
         compensationScopes: { where: overlapsMonth(m), include: { rule: { include: { tiers: { orderBy: { sortOrder: "asc" } } } } } },
-        kpiTargets: { where: { periodId: period.id, kpiDefinition: { code: PROFIT_KPI } } },
+        kpiTargets: targetForMonth((await profitKpi(tx, user.organizationId)).id, m),
         kpiActuals: { where: { periodId: period.id, kpiDefinition: { code: PROFIT_KPI } } },
         payrollAdjustments: { where: { periodId: period.id, status: { in: ["APPROVED", "APPLIED"] } } },
       },
@@ -823,6 +891,9 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
 export async function approveMonth(user: SessionUser, m: Month, comment: string | null, db: Db = prisma) {
   if (!user.permissions.has("payroll:approve")) throw new UserInputError("You do not have permission to approve payroll.")
   return inTx(db, async (tx) => {
+    // One approval at a time: a second click or a second user waits here, then finds the month approved.
+    const p = await ensurePeriod(tx, user.organizationId, m)
+    await tx.$executeRaw`SELECT 1 FROM payroll_runs WHERE period_id = ${p.id}::uuid FOR UPDATE`
     const { period } = await editableMonth(tx, user, m)
     const sheet = await getSheet(user, m, tx)
     const run = await findRun(tx, user.organizationId, m)
@@ -980,4 +1051,147 @@ export async function compensationHistory(user: SessionUser, employeeId: string,
       paid: i.payments.filter((p) => p.status === "CONFIRMED" || p.status === "SENT").reduce((a, p) => a.add(new Decimal(p.amount)), new Decimal(0)).toString(),
     })),
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Monthly approval preview and carrying employees forward
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ApprovalIssue = { employeeId: string; name: string; reason: "unconfirmed" | "changed" | "no_fix" | "salary_not_approved" | "pending_adjustment" | "negative" }
+
+/** What approving the month would do, and what still blocks it (shown before approving). */
+export async function approvalPreview(user: SessionUser, m: Month, db: Db = prisma) {
+  if (!user.permissions.has("payroll:read")) throw new UserInputError("You do not have permission to view payroll.")
+  const sheet = await getSheet(user, m, db)
+  const run = await findRun(db, user.organizationId, m)
+  const issues: ApprovalIssue[] = []
+  for (const r of sheet.rows) {
+    const reason: ApprovalIssue["reason"] | null = !r.fix
+      ? "no_fix"
+      : !r.salaryApproved
+        ? "salary_not_approved"
+        : r.pendingAdjustments > 0
+          ? "pending_adjustment"
+          : new Decimal(r.calculated).isNegative()
+            ? "negative"
+            : r.stale
+              ? "changed"
+              : !r.confirmed
+                ? "unconfirmed"
+                : null
+    if (reason) issues.push({ employeeId: r.employeeId, name: r.name, reason })
+  }
+  const totals = new Map<string, Decimal>()
+  for (const r of sheet.rows) totals.set(r.currency, (totals.get(r.currency) ?? new Decimal(0)).add(r.confirmed && !r.stale && r.approved ? r.approved : r.calculated))
+  const approval = run?.approvals.find((a) => a.decision === "APPROVED") ?? null
+  return {
+    month: `${m.year}-${String(m.month).padStart(2, "0")}`,
+    runStatus: run?.status ?? null,
+    editable: sheet.editable,
+    employees: sheet.rows.length,
+    confirmed: sheet.rows.filter((r) => r.confirmed && !r.stale).length,
+    totals: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toString() })),
+    issues,
+    approvedBy: approval?.approver.email ?? null,
+    approvedAt: approval?.decidedAt.toISOString() ?? null,
+    canApprove: sheet.editable && sheet.rows.length > 0 && issues.length === 0 && user.permissions.has("payroll:approve"),
+  }
+}
+
+export type CarryForwardItem = {
+  employeeId: string
+  fix?: string | null
+  currency?: string | null
+  departmentId?: string | null
+  kpiTarget?: string | null
+  kpiRecurring?: boolean
+  ratePct?: string | null
+}
+
+/** Employees of the previous month, with what they would carry into the month and whether they are already there. */
+export async function carryForwardPreview(user: SessionUser, m: Month, db: Db = prisma) {
+  if (!user.permissions.has("payroll:read")) throw new UserInputError("You do not have permission to view payroll.")
+  const prev = m.month === 1 ? { year: m.year - 1, month: 12 } : { year: m.year, month: m.month - 1 }
+  const [before, now] = [await getSheet(user, prev, db), await getSheet(user, m, db)]
+  const present = new Set(now.rows.map((r) => r.employeeId))
+  // Terms the new month already has (e.g. after a "this month only" change in the previous month).
+  const salaries = await db.salaryCondition.findMany({ where: { employeeId: { in: before.rows.map((r) => r.employeeId) }, ...overlapsMonth(m) }, orderBy: { validFrom: "desc" } })
+  return {
+    previous: `${prev.year}-${String(prev.month).padStart(2, "0")}`,
+    employees: before.rows.map((r) => {
+      const next = now.rows.find((x) => x.employeeId === r.employeeId)
+      const salary = salaries.find((x) => x.employeeId === r.employeeId)
+      return {
+      employeeId: r.employeeId,
+      name: r.name,
+      hireDate: r.hireDate,
+      terminationDate: r.terminationDate,
+      departmentId: r.departmentId,
+      departmentName: r.departmentName,
+      fix: next?.fix ?? (salary ? new Decimal(salary.baseAmount).toString() : r.fix),
+      currency: next?.currency ?? salary?.currency ?? r.currency,
+      terms: r.terms,
+      ratePct: r.rule.ratePct ?? null,
+      model: r.rule.model,
+      kpiTarget: next ? next.kpiTarget : r.kpiTargetRecurring ? r.kpiTarget : null,
+      kpiRecurring: r.kpiTargetRecurring,
+      present: present.has(r.employeeId),
+      }
+    }),
+  }
+}
+
+/**
+ * Brings chosen employees into the month (manual carry-forward). The employee record is never
+ * duplicated and the start date never changes: only month-specific terms are added where missing
+ * (department, salary, commission terms, KPI target), or changed from this month on when the user
+ * edited them. An employee who had left before the month is made active again from this month.
+ * Approved months are not touched (the month must be editable).
+ */
+export async function carryForwardEmployees(user: SessionUser, m: Month, items: CarryForwardItem[], db: Db = prisma) {
+  for (const p of ["employee:manage", "salary:manage"] as const) if (!user.permissions.has(p)) throw new UserInputError("Carrying employees forward needs permission to manage employees and salaries.")
+  if (!Array.isArray(items) || items.length === 0 || items.length > 500) throw new UserInputError("Choose employees to carry forward.")
+  const prev = m.month === 1 ? { year: m.year - 1, month: 12 } : { year: m.year, month: m.month - 1 }
+  const before = await getSheet(user, prev, db)
+  let added = 0
+  let updated = 0
+  for (const item of items) {
+    await inTx(db, async (tx) => {
+      const { period, run } = await editableMonth(tx, user, m)
+      const employee = await tx.employee.findFirst({ where: { id: item.employeeId, organizationId: user.organizationId } })
+      if (!employee) throw new UserInputError("Employee not found.")
+      await tx.$executeRaw`SELECT 1 FROM employees WHERE id = ${employee.id}::uuid FOR UPDATE`
+      const source = before.rows.find((r) => r.employeeId === employee.id)
+      const presentBefore = (await getSheet(user, m, tx, { employeeId: employee.id })).rows.length > 0
+      const start = monthStart(m)
+      // Active again from this month if the person had left or was archived (the start date stays as it was).
+      if (employee.archivedAt || (employee.terminationDate && employee.terminationDate < start)) {
+        await tx.employee.update({ where: { id: employee.id }, data: { archivedAt: null, terminationDate: null, status: "ACTIVE" } })
+      }
+      const departmentId = item.departmentId ?? source?.departmentId ?? null
+      if (departmentId) await setDepartmentFrom(tx, user, employee.id, departmentId, start)
+      // Salary: an edited FIX or currency applies from this month; otherwise the month keeps the terms it
+      // already has, and only an employee with no terms for the month gets the previous month's.
+      const covering = await tx.salaryCondition.findFirst({ where: { employeeId: employee.id, ...overlapsMonth(m) } })
+      if (item.fix || item.currency) {
+        await setSalaryFrom(tx, user, employee, m, { amount: item.fix ? parseCellAmount(item.fix, "FIX", { allowEmpty: false }) : undefined, currency: item.currency ?? undefined })
+      } else if (!covering && source?.fix) {
+        await setSalaryFrom(tx, user, employee, m, { amount: new Decimal(source.fix), currency: source.currency })
+      }
+      // Commission terms are effective-dated too: they continue on their own unless they ended or the rate changed.
+      if (source && source.rule.model !== "NONE" && user.permissions.has("compensation:manage")) {
+        const rateChanged = item.ratePct !== undefined && item.ratePct !== null && item.ratePct !== "" && item.ratePct !== source.rule.ratePct
+        const scopes = await tx.compensationAssignment.count({ where: { employeeId: employee.id, ...overlapsMonth(m) } })
+        if (rateChanged || !scopes) await setCompensationRule(user, m, employee.id, rateChanged ? { ...source.rule, ratePct: item.ratePct! } : source.rule, tx)
+      }
+      if (item.kpiTarget !== undefined && item.kpiTarget !== null && item.kpiTarget !== "") {
+        await setKpi(tx, user, employee.id, period.id, "kpiTarget", parseCellAmount(item.kpiTarget, "KPI Profit"), item.kpiRecurring ?? false)
+      }
+      await unconfirm(tx, run?.id, employee.id)
+      await audit(tx, user, "sheet.carry_forward", "employee", employee.id, { month: `${m.year}-${String(m.month).padStart(2, "0")}`, from: `${prev.year}-${String(prev.month).padStart(2, "0")}`, alreadyPresent: presentBefore })
+      if (presentBefore) updated++
+      else added++
+    })
+  }
+  return { added, updated }
 }

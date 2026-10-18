@@ -1,7 +1,7 @@
 "use client"
 
 import Decimal from "decimal.js"
-import { Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus } from "lucide-react"
+import { Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus, SlidersHorizontal, Copy } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type KeyboardEvent as ReactKeyboardEvent } from "react"
@@ -17,11 +17,11 @@ import { sheetAdminTexts } from "@/lib/i18n/sheet-admin"
 
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
 import { MonthPicker, StatusBadges } from "./month-header"
+import { ApprovalDialog, CarryForwardDialog, ConditionsDialog } from "./payroll-dialogs"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import { withMonth } from "@/lib/month-nav"
 import {
   addEmployeeAction,
-  approveMonthAction,
   archiveEmployeeAction,
   confirmRowAction,
   historyAction,
@@ -136,7 +136,11 @@ export function FinancialSheet(props: Props) {
   const A = sheetAdminTexts[locale]
   // Active departments drive the dropdowns and colors; archived ones are only in the department manager.
   const departments = useMemo(() => props.departments.filter((d) => !d.archived), [props.departments])
-  const [panel, setPanel] = useState<null | "departments" | "addDepartment" | "archive" | "bulkFix">(null)
+  const [panel, setPanel] = useState<null | "departments" | "addDepartment" | "archive" | "bulkFix" | "approve" | "carry">(null)
+  const [conditionsFor, setConditionsFor] = useState<SheetRow | null>(null)
+  // Confirmation checkboxes change at once; the server result then confirms or rolls them back.
+  const [confirmOverride, setConfirmOverride] = useState<Record<string, boolean>>({})
+  const [confirmSaving, setConfirmSaving] = useState<Record<string, boolean>>({})
   const [showFilters, setShowFilters] = useState(true)
   const [inflight, setInflight] = useState(0)
   const [bulkDept, setBulkDept] = useState("")
@@ -185,6 +189,7 @@ export function FinancialSheet(props: Props) {
   const [rowsSeen, setRowsSeen] = useState(rows)
   if (rowsSeen !== rows) {
     setRowsSeen(rows)
+    setConfirmOverride({})
     setPending({})
   }
 
@@ -339,10 +344,28 @@ export function FinancialSheet(props: Props) {
   async function toggle(row: SheetRow, col: Col) {
     if (!col.can) return
     if (col.key === "confirm") {
-      setBusy(true)
-      const result = await confirmRowAction(monthKey, row.employeeId, !row.confirmed || row.stale)
-      setBusy(false)
-      if (!result.ok) toast(result.message, "error")
+      const id = row.employeeId
+      if (confirmSaving[id]) return
+      const shown = confirmOverride[id] ?? (row.confirmed && !row.stale)
+      const target = !shown
+      setConfirmOverride((c) => ({ ...c, [id]: target }))
+      setConfirmSaving((c) => ({ ...c, [id]: true }))
+      const result = await confirmRowAction(monthKey, id, target).catch(() => ({ ok: false as const, message: locale === "ru" ? "Соединение прервано — изменение не сохранено" : "Connection lost: not saved" }))
+      setConfirmSaving((c) => {
+        const next = { ...c }
+        delete next[id]
+        return next
+      })
+      if (!result.ok) {
+        setConfirmOverride((c) => {
+          const next = { ...c }
+          delete next[id]
+          return next
+        })
+        toast(result.message, "error")
+        return
+      }
+      toast(fill(target ? A.payroll.confirmed : A.payroll.unconfirmed, { name: row.name }))
       refresh()
       return
     }
@@ -434,7 +457,7 @@ export function FinancialSheet(props: Props) {
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (editing || termsFor || payFor || historyFor || panel) return
+    if (editing || termsFor || payFor || historyFor || panel || conditionsFor) return
     const mod = event.metaKey || event.ctrlKey
     if (mod && event.key.toLowerCase() === "c") {
       event.preventDefault()
@@ -579,16 +602,6 @@ export function FinancialSheet(props: Props) {
     URL.revokeObjectURL(url)
   }
 
-  async function approve() {
-    if (!window.confirm(fill(t.sheet.approveConfirm, { month: monthTitle }))) return
-    setBusy(true)
-    const result = await approveMonthAction(monthKey)
-    setBusy(false)
-    if (!result.ok) return toast(result.message, "error")
-    toast(t.sheet.approved)
-    refresh()
-  }
-
   // ── Render ──
 
 
@@ -624,6 +637,11 @@ export function FinancialSheet(props: Props) {
               <UserPlus /> {A.toolbar.employee}
             </Button>
           )}
+          {editable && perms.employee && perms.salary && (
+            <Button variant="outline" size="sm" onClick={() => setPanel("carry")} title={A.payroll.carry}>
+              <Copy /> {locale === "ru" ? "Перенести из прошлого месяца" : "Carry over"}
+            </Button>
+          )}
           {perms.structure && (
             <Button variant="outline" size="sm" onClick={() => setPanel("addDepartment")}>
               <Plus /> {A.toolbar.department}
@@ -646,8 +664,8 @@ export function FinancialSheet(props: Props) {
           <Button variant="outline" size="sm" onClick={exportCsv}>
             <Download /> {t.common.export}
           </Button>
-          {perms.approve && editable && rows.length > 0 && (
-            <Button size="sm" onClick={approve} disabled={busy || unconfirmed > 0} title={unconfirmed ? fill(t.dashboard.unconfirmed, { n: unconfirmed }) : undefined}>
+          {perms.approve && rows.length > 0 && (props.runStatus === null || props.runStatus === "DRAFT" || props.runStatus === "CALCULATED") && (
+            <Button size="sm" onClick={() => setPanel("approve")} disabled={busy} title={unconfirmed ? fill(t.dashboard.unconfirmed, { n: unconfirmed }) : undefined}>
               <Check /> {t.sheet.approveMonth}
             </Button>
           )}
@@ -755,7 +773,7 @@ export function FinancialSheet(props: Props) {
                             else setAnchor(null)
                             setActive({ r, c })
                           }}
-                          onDoubleClick={() => beginEdit()}
+                          onDoubleClick={() => col.kind !== "check" && beginEdit()}
                           className={cn(
                             "relative h-9 border-b border-r border-border/50 px-3 whitespace-nowrap",
                             col.money && "text-right font-mono tabular-nums",
@@ -791,6 +809,11 @@ export function FinancialSheet(props: Props) {
                               t={t}
                               palette={palette}
                               paying={paying && perms.pay}
+                              confirmState={{ value: confirmOverride[row.employeeId] ?? (row.confirmed && !row.stale), saving: !!confirmSaving[row.employeeId] }}
+                              confirmTip={A.payroll.confirmTip}
+                              onConditions={editable && (perms.salary || perms.kpi) ? () => setConditionsFor(row) : undefined}
+                              conditionsLabel={A.payroll.conditions}
+                              inheritedLabel={A.payroll.inherited}
                               onToggle={() => toggle(row, col)}
                               onTerms={() => col.can && setTermsFor(row)}
                               onPay={() => setPayFor(row)}
@@ -931,6 +954,22 @@ export function FinancialSheet(props: Props) {
           }}
         />
       )}
+      {panel === "approve" && (
+        <ApprovalDialog monthKey={monthKey} monthTitle={monthTitle} locale={locale} t={A} canConfirm={perms.prepare && editable} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
+      )}
+      {panel === "carry" && (
+        <CarryForwardDialog monthKey={monthKey} monthTitle={monthTitle} departments={departments} locale={locale} t={A} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
+      )}
+      {conditionsFor && (
+        <ConditionsDialog
+          monthKey={monthKey}
+          row={{ employeeId: conditionsFor.employeeId, name: conditionsFor.name, fix: conditionsFor.fix, currency: conditionsFor.currency, kpiTarget: conditionsFor.kpiTarget, kpiTargetInherited: conditionsFor.kpiTargetInherited }}
+          t={A}
+          toast={toast}
+          onChanged={refresh}
+          onClose={() => setConditionsFor(null)}
+        />
+      )}
       {panel === "bulkFix" && (
         <BulkFixDialog
           rows={selectedRows.map((r) => ({ employeeId: r.employeeId, name: r.name, fix: r.fix, currency: r.currency }))}
@@ -977,6 +1016,11 @@ function CellView(props: {
   onReveal: () => void
   onHistory?: () => void
   onArchive?: () => void
+  confirmState: { value: boolean; saving: boolean }
+  confirmTip: string
+  onConditions?: () => void
+  conditionsLabel: string
+  inheritedLabel: string
 }) {
   const { row, col, raw, locale, t } = props
   const money = (v: string | null, opts = {}) => formatAmount(v, row.currency, locale, opts)
@@ -988,6 +1032,11 @@ function CellView(props: {
           {row.isTeamLead && <span className="rounded bg-primary/20 px-1 text-[10px] font-bold text-primary">ТЛ</span>}
           {row.status !== "ACTIVE" && <span className="text-[10px] uppercase text-muted-foreground">{t.sheet.employeeStatus[row.status as keyof Dictionary["sheet"]["employeeStatus"]]}</span>}
           <span className="ml-auto hidden gap-1 group-hover:flex">
+            {props.onConditions && (
+              <button type="button" onClick={props.onConditions} className="text-muted-foreground hover:text-primary" title={props.conditionsLabel} aria-label={props.conditionsLabel}>
+                <SlidersHorizontal className="size-3.5" />
+              </button>
+            )}
             {props.onHistory && (
               <button type="button" onClick={props.onHistory} className="text-muted-foreground hover:text-primary" title={t.sheet.history} aria-label={t.sheet.history}>
                 <History className="size-3.5" />
@@ -1028,8 +1077,14 @@ function CellView(props: {
           {money(raw || "0", { blankZero: true })}
         </span>
       )
-    case "variable":
     case "kpiTarget":
+      return (
+        <span className="flex items-center justify-end gap-1" title={row.kpiTargetInherited ? props.inheritedLabel : undefined}>
+          {row.kpiTargetInherited && <span className="text-[10px] text-primary/80">↻</span>}
+          {money(raw || null)}
+        </span>
+      )
+    case "variable":
     case "kpiActual":
       return <>{money(raw || null, { blankZero: col.key === "variable" })}</>
     case "calculated":
@@ -1045,16 +1100,18 @@ function CellView(props: {
           <button
             type="button"
             onClick={props.onToggle}
-            disabled={!col.can}
-            aria-pressed={row.confirmed}
-            title={row.stale ? t.sheet.changedAfterConfirm : undefined}
+            disabled={!col.can || props.confirmState.saving}
+            aria-pressed={props.confirmState.value}
+            aria-busy={props.confirmState.saving}
+            title={row.stale && !props.confirmState.saving ? t.sheet.changedAfterConfirm : props.confirmTip}
             className={cn(
               "flex size-5 items-center justify-center rounded border transition-colors",
-              row.confirmed && !row.stale ? "border-primary bg-primary text-primary-foreground" : row.stale ? "border-amber-400 text-amber-400" : "border-muted-foreground/50",
+              props.confirmState.value ? "border-primary bg-primary text-primary-foreground" : row.stale ? "border-amber-400 text-amber-400" : "border-muted-foreground/50 hover:border-primary",
               !col.can && "opacity-60",
+              props.confirmState.saving && "opacity-70",
             )}
           >
-            {row.confirmed && <Check className="size-3.5" />}
+            {props.confirmState.saving ? <Loader2 className="size-3 animate-spin" /> : props.confirmState.value ? <Check className="size-3.5" /> : row.stale ? <AlertTriangle className="size-3" /> : null}
           </button>
         </span>
       )
