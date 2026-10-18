@@ -101,7 +101,7 @@ export type MonthSnapshot = {
 
 const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated"]
 
-function pickSnapshot(source: MonthSnapshot): MonthSnapshot {
+export function pickSnapshot(source: MonthSnapshot): MonthSnapshot {
   return Object.fromEntries(SNAPSHOT_KEYS.map((k) => [k, source[k]])) as MonthSnapshot
 }
 
