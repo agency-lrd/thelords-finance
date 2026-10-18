@@ -125,6 +125,15 @@ export function readCsv(text: string): string[][] {
   return rows.filter((r) => r.some((c) => c.trim()))
 }
 
+/**
+ * Text that a spreadsheet would run as a formula (=, +, -, @, tab or carriage return at the start) gets a
+ * leading apostrophe, so exported files cannot carry formula injection. Plain numbers are left as they are.
+ */
+export function safeCell(value: string | number | null) {
+  const text = String(value ?? "")
+  return /^[=+\-@\t\r]/.test(text) && !/^-?\d+([.,]\d+)?$/.test(text) ? `'${text}` : text
+}
+
 export function toCsv(rows: (string | number | null)[][]) {
-  return "﻿" + rows.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n")
+  return "\uFEFF" + rows.map((r) => r.map((v) => `"${safeCell(v).replace(/"/g, '""')}"`).join(",")).join("\r\n")
 }

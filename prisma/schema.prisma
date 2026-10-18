@@ -578,6 +578,7 @@ model Organization {
   aiConversations  AiConversation[]
   aiMessages       AiMessage[]
   financialTarget  FinancialTarget?
+  importBatches    TransactionImportBatch[]
 
   @@map("organizations")
 }
@@ -617,6 +618,7 @@ model AppUser {
   aiConversations       AiConversation[]
   aiMessages            AiMessage[]
   targetsUpdated        FinancialTarget[]
+  importBatches         TransactionImportBatch[]
 
   @@map("app_users")
 }
@@ -1774,6 +1776,7 @@ model Transaction {
   notes                     String?
   attachmentUrl             String?           @map("attachment_url")
   externalRef               String?           @map("external_ref") // import de-duplication key
+  importBatchId             String?           @map("import_batch_id") @db.Uuid
   journalEntryId            String?           @unique @map("journal_entry_id") @db.Uuid
   createdById               String?           @map("created_by_id") @db.Uuid
   postedById                String?           @map("posted_by_id") @db.Uuid
@@ -1796,10 +1799,12 @@ model Transaction {
   createdBy               AppUser?           @relation("TransactionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   postedBy                AppUser?           @relation("TransactionPostedBy", fields: [postedById], references: [id], onDelete: Restrict)
   currencyRef             Currency           @relation("TransactionCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  importBatch             TransactionImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, number])
   @@unique([organizationId, externalRef])
   @@index([organizationId, date])
+  @@index([importBatchId])
   @@index([periodId])
   @@map("transactions")
 }
@@ -2022,4 +2027,51 @@ model FinancialTarget {
   updatedBy    AppUser?     @relation(fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@map("financial_targets")
+}
+
+enum ImportBatchStatus {
+  PARSED // file read; mapping and validation in progress
+  IMPORTING
+  IMPORTED // every included row created (or skipped as already imported)
+  PARTIAL // some chunks failed; confirming again resumes without duplicates
+  FAILED
+  CANCELLED
+
+  @@map("import_batch_status")
+}
+
+/// One uploaded CSV/XLSX file and its import into draft transactions. Keeps the parsed cells, the
+/// column mapping, the validation settings and the per-row result, so every import is traceable and
+/// can be resumed safely (rows carry stable import keys in transactions.external_ref).
+model TransactionImportBatch {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  createdById    String            @map("created_by_id") @db.Uuid
+  fileName       String            @map("file_name")
+  fileSize       Int               @map("file_size")
+  fileSha256     String            @map("file_sha256") @db.Char(64)
+  format         String            @db.VarChar(4) // CSV or XLSX
+  encoding       String?           @db.VarChar(20)
+  delimiter      String?           @db.VarChar(5)
+  rowCount       Int               @map("row_count")
+  cells          Json // parsed rows (strings only; formulas are never evaluated)
+  settings       Json? // header row, column mapping, formats, defaults
+  status         ImportBatchStatus @default(PARSED)
+  createdCount   Int               @default(0) @map("created_count")
+  duplicateCount Int               @default(0) @map("duplicate_count")
+  excludedCount  Int               @default(0) @map("excluded_count")
+  errorCount     Int               @default(0) @map("error_count")
+  result         Json? // per-row outcome of the last confirmation
+  errorMessage   String?           @map("error_message")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  completedAt    DateTime?         @map("completed_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    AppUser       @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, fileSha256])
+  @@map("transaction_import_batches")
 }

@@ -79,6 +79,8 @@ export type TransactionInput = {
   notes: string | null
   attachmentUrl: string | null
   externalRef?: string | null
+  /** Set by the CSV/XLSX import: the batch the draft came from. */
+  importBatchId?: string | null
 }
 
 function need(user: SessionUser, permission: "journal:create" | "journal:post") {
@@ -207,6 +209,7 @@ export async function createTransaction(user: SessionUser, input: TransactionInp
         number: (last._max.number ?? 0) + 1,
         periodId: period.id,
         externalRef: input.externalRef ?? null,
+        importBatchId: input.importBatchId ?? null,
         createdById: user.id,
       },
     })

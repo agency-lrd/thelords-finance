@@ -1,9 +1,9 @@
 "use client"
 
-import { Download, FileUp, Paperclip, Plus, Rows3, Scale, Search, Upload } from "lucide-react"
+import { Download, Paperclip, Plus, Rows3, Scale, Search, Upload } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useMemo, useRef, useState, useTransition } from "react"
+import { useMemo, useState, useTransition } from "react"
 import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
@@ -12,8 +12,9 @@ import type { listTransactions, transactionOptions } from "@/lib/data/transactio
 import { fill } from "@/lib/i18n/dictionaries"
 import { formatAmount, formatDate, normalizeNumber, type Locale } from "@/lib/i18n/format"
 import { transactionTexts, type TransactionTexts } from "@/lib/i18n/transactions"
-import { readCsv, readXlsx, toCsv, writeXlsx } from "@/lib/xlsx"
+import { toCsv, writeXlsx } from "@/lib/xlsx"
 
+import { ImportWizard } from "./import-wizard"
 import { deleteDraftAction, importAction, postAction, reverseAction, saveTransactionAction, settleAction, type TransactionForm } from "./actions"
 
 type Row = Awaited<ReturnType<typeof listTransactions>>[number]
@@ -111,7 +112,7 @@ export function TransactionsWorkspace(props: Props) {
       )}
 
       {panel === "bulk" && <BulkEntry t={t} options={options} busy={busy} onSave={(table) => run(() => importAction(table, false), (r) => ("created" in r ? fill(t.importResult, { created: r.created, skipped: r.skipped, errors: r.errors.length }) + (r.errors.length ? ` — ${r.errors.slice(0, 3).join("; ")}` : "") : undefined))} />}
-      {panel === "import" && <ImportPanel t={t} busy={busy} onImport={(table) => run(() => importAction(table, true), (r) => ("created" in r ? fill(t.importResult, { created: r.created, skipped: r.skipped, errors: r.errors.length }) + (r.errors.length ? ` — ${r.errors.slice(0, 3).join("; ")}` : "") : undefined))} />}
+      {panel === "import" && <ImportWizard locale={locale} options={options} onClose={() => setPanel("none")} onImported={refresh} />}
       {panel === "reconcile" && <Reconcile t={t} locale={locale} baseCurrency={props.baseCurrency} balances={props.balances} />}
 
       <Filters t={t} options={options} filters={props.filters} />
@@ -467,38 +468,6 @@ function BulkEntry({ t, options, busy, onSave }: { t: TransactionTexts; options:
       <div className="flex gap-2">
         <Button type="button" variant="outline" size="sm" onClick={() => setGrid((g) => [...g, blank()])}><Plus /> {t.addRow}</Button>
         <Button type="button" size="sm" disabled={busy} onClick={() => onSave(grid.filter((row) => row[2].trim() && row[3].trim()))}>{t.bulkSave}</Button>
-      </div>
-    </div>
-  )
-}
-
-function ImportPanel({ t, busy, onImport }: { t: TransactionTexts; busy: boolean; onImport: (table: string[][]) => void }) {
-  const input = useRef<HTMLInputElement>(null)
-  return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-primary/30 bg-card/40 p-4">
-      <p className="text-xs text-muted-foreground">{t.importHint}</p>
-      <div className="flex items-center gap-3">
-        <input
-          ref={input}
-          type="file"
-          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          className="text-sm file:mr-3 file:rounded-full file:border file:border-border file:bg-transparent file:px-3 file:py-1 file:text-foreground"
-          aria-label={t.import}
-        />
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy}
-          onClick={async () => {
-            const file = input.current?.files?.[0]
-            if (!file) return
-            if (file.size > 5_000_000) return alert("Max 5 MB")
-            const table = file.name.toLowerCase().endsWith(".xlsx") ? readXlsx(new Uint8Array(await file.arrayBuffer())) : readCsv(await file.text())
-            onImport(table)
-          }}
-        >
-          <FileUp /> {t.import}
-        </Button>
       </div>
     </div>
   )

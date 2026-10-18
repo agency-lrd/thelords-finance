@@ -43,7 +43,7 @@ Last updated: AI CFO targets and insights (migration 20261020090000_financial_ta
 | --- | --- |
 | `/` Overview | Net profit for the period vs the monthly target; 12 KPI cards; risk alerts; trends (revenue/expenses, EBITDA, net profit, cash); profit by department; top clients; biggest expenses; upcoming payments; budget vs actual; owner distributions. Every card links to its report. Period: month, quarter or year |
 | `/payroll` Financial sheet | Employee sheet plus project costs/income and department contribution (described in earlier sessions) |
-| `/transactions` | Filters and search; type-aware entry form; drafts; posting (single or bulk); reversal; payment of unpaid items; bulk grid that accepts paste from Google Sheets; CSV/XLSX import (re-importing creates no duplicates); CSV/XLSX export; reconciliation against bank statements |
+| `/transactions` | Filters and search; type-aware entry form; drafts; posting (single or bulk); reversal; payment of unpaid items; bulk grid that accepts paste from Google Sheets; CSV/XLSX import wizard (file → column mapping → row validation with errors by row number → confirmation → results; drafts only, never posted; duplicates and repeated files detected; import history); CSV/XLSX export (formula-injection safe); reconciliation against bank statements |
 | `/pnl` | Statement by chart-of-accounts section with expandable lines and drill-down to journal lines. Compares with the previous period, the same period a year ago and the budget; filter by department or client; month, quarter or year |
 | `/cash-flow` | Direct method, reconciled to account balances; minimum reserve, surplus or deficit; burn rate, runway, upcoming obligations, overdue items; 3-scenario forecast labelled as a forecast |
 | `/balance-sheet` | Balances as of any date, with drill-down. Checks Assets = Liabilities + Equity and warns if they differ; no balancing entries are ever created |
@@ -59,7 +59,7 @@ Last updated: AI CFO targets and insights (migration 20261020090000_financial_ta
 
 ## Database
 
-Ten migrations, all additive. The latest, `20261020090000_financial_targets`, adds one row of business targets per organization (RLS on, no browser access). Before it, `20261019090000_ai_cfo` added the private AI chat history
+Eleven migrations, all additive. The latest, `20261021090000_transaction_imports`, adds the import batches table (file metadata, parsed cells, mapping, per-row results; append-only history, RLS on, no browser access) and a nullable `import_batch_id` on transactions. Before it, `20261020090000_financial_targets` added one row of business targets per organization (RLS on, no browser access). Before it, `20261019090000_ai_cfo` added the private AI chat history
 (`ai_conversations`, `ai_messages` with token usage and estimated cost). Messages are append-only,
 conversations cannot be deleted (only hidden), a message must belong to its conversation's user and
 organization, RLS is on and the browser roles have no privileges. It changes no existing table.
@@ -68,12 +68,13 @@ organization, RLS is on and the browser roles have no privileges. It changes no 
 
 | Suite | Checks | What it covers |
 | --- | --- | --- |
-| `test:unit` | 68 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; target gaps and what-if; margin opportunities; prioritized recommendations; follow-up parsing; cost estimates |
-| `db:test` | 137 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
+| `test:unit` | 80 | Payroll engine; statements; number formats; XLSX/CSV; anomalies; AI alert rules; forecast engine; target gaps and what-if; margin opportunities; prioritized recommendations; follow-up parsing; cost estimates |
+| `db:test` | 138 | Migrations, constraints, period locks, payroll workflow, RLS, seeds, transaction and budget rules |
 | `test:sheet` | 23 | End-to-end payroll and project income/costs |
 | `test:reports` | 16 | Every transaction type; drafts excluded; balanced entries; P&L; cash flow reconciliation; balance sheet; reversal; drill-down; EUR conversion; payroll integration; quarter/year totals; owner distributions; budgets; permissions |
 | `test:vault` | 9 | Access register sharing, history and the secret guard |
 | `test:ai` | 24 | Every AI tool's result envelope; figures equal the reports; completeness; strict input validation; no write tools; findings, opportunities and prioritized actions with the no-data guard; data-gap links; onboarding status; conversation memory; targets (permission, audit, gap, what-if); role permissions; organization isolation; chat loop with a scripted model (tool calls, errors, refusal, round and spending limits, rate limits, attachments, history); private conversations; append-only chat tables |
+| `test:import` | 10 | CSV/XLSX import: upload, validation with row numbers, drafts only (no ledger postings), repeated file, XLSX serial dates and formats, rejected files, permissions and organization isolation, failed write isolation and resume without duplicates, cancellation |
 
 All integration tests run on a throwaway PGlite database; nothing is ever written to production, and the
 AI tests never call the AI provider.

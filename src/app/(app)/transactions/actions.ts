@@ -16,6 +16,7 @@ import {
   updateDraft,
   type TransactionInput,
 } from "@/lib/data/transactions"
+import { cancelImportBatch, commitImportBatch, listImportBatches, validateImportBatch } from "@/lib/data/imports"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { transactionTexts } from "@/lib/i18n/transactions"
 import { normalizeNumber } from "@/lib/i18n/format"
@@ -274,5 +275,51 @@ export async function importAction(table: string[][], hasHeader: boolean): Promi
     return { ok: true, created, skipped, errors: errors.slice(0, 50) }
   } catch (error) {
     return { ok: false, message: toActionError(error).message ?? "Error" }
+  }
+}
+
+// ── File import (CSV/XLSX → drafts) ──
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const failed = (error: unknown) => ({ ok: false as const, message: toActionError(error).message ?? "Error" })
+const batchId = (v: unknown) => {
+  if (typeof v !== "string" || !UUID.test(v)) throw new UserInputError("Import not found.")
+  return v
+}
+
+export async function validateImportAction(id: string, settings: unknown) {
+  try {
+    return { ok: true as const, ...(await validateImportBatch(await authorize("journal:create"), batchId(id), settings)) }
+  } catch (error) {
+    return failed(error)
+  }
+}
+
+export async function commitImportAction(id: string, settings: unknown, includeRows: number[], confirmed: boolean) {
+  try {
+    const user = await authorize("journal:create")
+    if (confirmed !== true) throw new UserInputError("Confirm the import first.")
+    const result = await commitImportBatch(user, batchId(id), settings, includeRows)
+    done()
+    return { ok: true as const, result }
+  } catch (error) {
+    return failed(error)
+  }
+}
+
+export async function importHistoryAction() {
+  try {
+    return { ok: true as const, batches: await listImportBatches(await authorize("journal:create")) }
+  } catch (error) {
+    return failed(error)
+  }
+}
+
+export async function cancelImportAction(id: string) {
+  try {
+    await cancelImportBatch(await authorize("journal:create"), batchId(id))
+    return { ok: true as const }
+  } catch (error) {
+    return failed(error)
   }
 }
