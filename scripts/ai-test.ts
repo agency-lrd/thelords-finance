@@ -339,6 +339,27 @@ async function main() {
       assert.ok(b.type === "done" && b.reason === "budget")
     })
 
+    await step("provider errors: a rejected fallback beta is retried without it; a missing model is reported clearly", async () => {
+      const { Anthropic } = await import("../src/lib/ai/provider")
+      const seen: BetaMessageStreamParams[] = []
+      const events: import("../src/lib/ai/chat").ChatEvent[] = []
+      const rejectFallback = async (params: BetaMessageStreamParams, onText: (d: string) => void) => {
+        seen.push(params)
+        if (params.fallbacks) throw new Anthropic.BadRequestError(400, undefined, "fallbacks not allowed", new Headers())
+        return fake(() => ({ text: "Ответ без fallback." }))(params, onText)
+      }
+      await chat.runChat(admin, chat.ChatRequestSchema.parse({ message: "Тест" }), (e) => events.push(e), { callModel: rejectFallback, db: prisma, limits })
+      assert.deepEqual(seen.map((p) => p.fallbacks ?? null), ["default", null])
+      assert.equal(seen[1].betas, undefined)
+      const done = events.find((e) => e.type === "done")!
+      assert.ok(done.type === "done" && done.status === "COMPLETE")
+      const missing: import("../src/lib/ai/chat").ChatEvent[] = []
+      await chat.runChat(admin, chat.ChatRequestSchema.parse({ message: "Тест" }), (e) => missing.push(e), { callModel: async () => { throw new Anthropic.NotFoundError(404, undefined, "model not found", new Headers()) }, db: prisma, limits })
+      assert.ok(missing.some((e) => e.type === "error" && e.code === "provider_model"))
+      const end = missing.find((e) => e.type === "done")!
+      assert.ok(end.type === "done" && end.status === "ERROR" && end.usage.costUsd === 0)
+    })
+
     await step("rate and spending limits block new requests before calling the model", async () => {
       calls.length = 0
       const rate = await ask(admin, {}, () => ({ text: "x" }), { ...limits, perMinute: 1 })

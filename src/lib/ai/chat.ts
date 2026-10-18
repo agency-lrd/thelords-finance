@@ -73,7 +73,7 @@ export type ChatEvent =
   | { type: "text"; delta: string }
   | { type: "tool"; tool: ToolEvent }
   | { type: "done"; messageId: string; status: "COMPLETE" | "TRUNCATED" | "REFUSED" | "ERROR"; reason: StopReason; followUps: string[]; usage: Usage & { costUsd: number; model: string } }
-  | { type: "error"; code: LimitBlock["code"] | "invalid_request" | "not_found" | "provider_auth" | "provider_rate_limited" | "provider_unavailable" | "internal"; message?: string; retryAfterSeconds?: number | null }
+  | { type: "error"; code: LimitBlock["code"] | "invalid_request" | "not_found" | "provider_auth" | "provider_model" | "provider_bad_request" | "provider_rate_limited" | "provider_unavailable" | "internal"; message?: string; retryAfterSeconds?: number | null }
 
 export type ChatDeps = { callModel: ModelCall; db?: Db; limits?: AiLimits; now?: () => Date }
 
@@ -218,6 +218,8 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
   let text = ""
   let reason: StopReason = "complete"
   const budget = remainingBudget(limits, usageBefore)
+  // Server-side fallback is a beta: if the API rejects the request with it (400), the answer continues without it.
+  let fallback = true
 
   try {
     for (let round = 0; ; round++) {
@@ -239,7 +241,7 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
               messages: withCacheBreakpoint(messages),
               thinking: { type: "adaptive" },
               output_config: { effort: limits.effort },
-              ...FALLBACK,
+              ...(fallback ? FALLBACK : {}),
             },
             (delta) => {
               roundText += delta
@@ -248,7 +250,12 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
           )
           break
         } catch (err) {
-          // Only a tool input that could not be parsed is retried; API errors go to the outer handler.
+          if (err instanceof Anthropic.BadRequestError && fallback && !roundText) {
+            fallback = false
+            console.warn("AI CFO: request with server-side fallbacks was rejected (400); retrying without them")
+            continue
+          }
+          // Only a tool input that could not be parsed is retried; other API errors go to the outer handler.
           if (err instanceof Anthropic.APIError || attempt >= 2) throw err
           roundText = ""
           emit({ type: "retry" })
@@ -299,7 +306,11 @@ export async function runChat(user: SessionUser, request: ChatRequest, emit: (e:
     const code =
       err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError
         ? "provider_auth"
-        : err instanceof Anthropic.RateLimitError
+        : err instanceof Anthropic.NotFoundError
+          ? "provider_model"
+          : err instanceof Anthropic.BadRequestError
+            ? "provider_bad_request"
+            : err instanceof Anthropic.RateLimitError
           ? "provider_rate_limited"
           : err instanceof Anthropic.APIError || err instanceof Anthropic.APIConnectionError
             ? "provider_unavailable"

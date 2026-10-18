@@ -229,7 +229,7 @@ export function AiChat(props: {
         updateLast((m) => ({ ...m, id: e.messageId, content: e.status === "REFUSED" ? "" : visible(m.content).trim(), followUps: e.followUps, status: e.status, reason: e.reason }))
         break
       case "error":
-        if (e.code === "provider_auth" || e.code === "provider_rate_limited" || e.code === "provider_unavailable" || e.code === "internal") updateLast((m) => ({ ...m, error: errorText(e.code) }))
+        if (e.code === "provider_auth" || e.code === "provider_model" || e.code === "provider_bad_request" || e.code === "provider_rate_limited" || e.code === "provider_unavailable" || e.code === "internal") updateLast((m) => ({ ...m, error: errorText(e.code) }))
         else {
           updateLast((m) => ({ ...m, status: "ERROR", error: errorText(e.code) }))
           setError(errorText(e.code))
