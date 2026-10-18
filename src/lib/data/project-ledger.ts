@@ -87,7 +87,7 @@ export async function getProjectLedger(user: SessionUser, m: Month, db: Db = pri
   })
 
   return {
-    departments: departments.map((d) => ({ id: d.id, name: d.name, classification: d.costClassification, teams: d.teams.map((t) => ({ id: t.id, name: t.name })) })),
+    departments: departments.map((d) => ({ id: d.id, name: d.name, color: d.color, classification: d.costClassification, teams: d.teams.map((t) => ({ id: t.id, name: t.name })) })),
     income: income.map((r) => ({
       ...common(r),
       kind: "income" as const,

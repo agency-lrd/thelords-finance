@@ -4,7 +4,7 @@ import { Suspense } from "react"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { can, requirePageAccess } from "@/lib/auth/session"
 import { listFinancialAccounts } from "@/lib/data/accounts"
-import { listDepartments } from "@/lib/data/settings"
+import { listSheetDepartments } from "@/lib/data/sheet-admin"
 import { getProjectLedger } from "@/lib/data/project-ledger"
 import { getSheet } from "@/lib/data/sheet"
 import { getDictionary } from "@/lib/i18n/server"
@@ -32,7 +32,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
   const showLedger = can(user, "project_finance:read")
   const [sheet, departments, accounts, ledger] = await Promise.all([
     getSheet(user, month),
-    listDepartments(user),
+    listSheetDepartments(user, month),
     can(user, "payroll:pay") || can(user, "project_finance:manage") ? listFinancialAccounts(user) : Promise.resolve([]),
     showLedger ? getProjectLedger(user, month) : Promise.resolve(null),
   ])
@@ -61,7 +61,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
       editable={sheet.editable}
       // Salary figures are removed server-side for users without salary:read.
       rows={showSalary ? sheet.rows : sheet.rows.map((r) => ({ ...r, fix: null, variable: "0", bonus: "0", deduction: "0", calculated: "0", approved: null, paid: "0", outstanding: null }))}
-      departments={departments.map((d) => ({ id: d.id, name: d.name }))}
+      departments={departments}
       accounts={can(user, "payroll:pay") ? openAccounts : []}
       perms={{
         employee: can(user, "employee:manage"),
@@ -74,6 +74,8 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
         approve: can(user, "payroll:approve"),
         pay: can(user, "payroll:pay"),
         history: showSalary,
+        structure: can(user, "structure:manage"),
+        deleteEmployee: can(user, "employee:manage") && can(user, "salary:manage"),
       }}
     />
     {ledger && (

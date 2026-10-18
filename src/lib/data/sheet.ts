@@ -77,7 +77,7 @@ async function findRun(db: Db | Tx, organizationId: string, m: Month) {
 
 export type SheetRow = Awaited<ReturnType<typeof getSheet>>["rows"][number]
 
-export async function getSheet(user: SessionUser, m: Month, db: Db = prisma) {
+export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, options: { employeeId?: string } = {}) {
   const start = monthStart(m)
   const end = monthEnd(m)
   // Sequential on purpose: db may be a transaction, which runs one query at a time.
@@ -90,6 +90,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma) {
   const employees = await db.employee.findMany({
     where: {
       organizationId: user.organizationId,
+      ...(options.employeeId ? { id: options.employeeId } : {}),
       OR: [
         {
           archivedAt: null,
@@ -320,13 +321,64 @@ async function unconfirm(tx: Tx, runId: string | undefined, employeeId: string) 
   return true
 }
 
-export async function updateSheetCell(user: SessionUser, m: Month, employeeId: string, field: SheetField, raw: string, db: Db = prisma) {
+/** A cell changed since the user loaded it: the edit is refused instead of overwriting it. */
+export class SheetConflictError extends UserInputError {
+  constructor(public current: string) {
+    super("This cell was changed by someone else. The sheet has been refreshed: check the new value and edit again.")
+  }
+}
+
+/** The value of a cell as the sheet shows it, for conflict checks. */
+export function cellValue(row: SheetRow, field: SheetField): string {
+  switch (field) {
+    case "name": return row.name
+    case "department": return row.departmentId ?? ""
+    case "fix": return row.fix ?? ""
+    case "currency": return row.currency
+    case "kpiTarget": return row.kpiTarget ?? ""
+    case "kpiActual": return row.kpiActual ?? ""
+    case "bonus": return row.bonus
+    case "deduction": return row.deduction
+    case "position": return row.position ?? ""
+    case "status": return row.status
+    case "isTeamLead": return String(row.isTeamLead)
+    case "notes": return row.notes ?? ""
+    case "hireDate": return row.hireDate
+    case "wallet": return row.wallet?.masked ?? ""
+  }
+}
+
+const NUMERIC: SheetField[] = ["fix", "kpiTarget", "kpiActual", "bonus", "deduction"]
+
+function sameValue(field: SheetField, a: string, b: string) {
+  if (NUMERIC.includes(field)) {
+    const n = (v: string) => (v.trim() === "" ? (field === "bonus" || field === "deduction" ? "0" : "") : v.trim().replace(/[\s,]/g, ""))
+    const x = n(a)
+    const y = n(b)
+    if (x === "" || y === "") return x === y
+    return /^-?\d+(\.\d+)?$/.test(x) && /^-?\d+(\.\d+)?$/.test(y) ? new Decimal(x).eq(y) : x === y
+  }
+  if (field === "isTeamLead") return /^(true|1)$/i.test(a.trim()) === /^(true|1)$/i.test(b.trim())
+  return a.trim() === b.trim()
+}
+
+/**
+ * Edits one cell. `expected` is the value the user saw when they started editing: if the cell has
+ * changed since (another user, another tab), the edit is refused with SheetConflictError instead of
+ * silently overwriting it. The employee row is locked for the duration, so concurrent edits queue.
+ */
+export async function updateSheetCell(user: SessionUser, m: Month, employeeId: string, field: SheetField, raw: string, db: Db = prisma, expected?: string | null) {
   if (!user.permissions.has(FIELD_PERMISSION[field])) throw new UserInputError("You do not have permission to edit this column.")
   return inTx(db, async (tx) => {
     const employee = await tx.employee.findFirst({ where: { id: employeeId, organizationId: user.organizationId } })
     if (!employee) throw new UserInputError("Employee not found.")
+    await tx.$executeRaw`SELECT 1 FROM employees WHERE id = ${employeeId}::uuid FOR UPDATE`
     const { period, run } = await editableMonth(tx, user, m)
     const value = raw.trim()
+    if (expected !== undefined && expected !== null) {
+      const current = (await getSheet(user, m, tx, { employeeId })).rows[0]
+      if (current && !sameValue(field, cellValue(current, field), expected)) throw new SheetConflictError(cellValue(current, field))
+    }
 
     switch (field) {
       case "name": {

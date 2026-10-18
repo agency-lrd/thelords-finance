@@ -1,7 +1,7 @@
 "use client"
 
 import Decimal from "decimal.js"
-import { ChevronLeft, ChevronRight, Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search } from "lucide-react"
+import { ChevronLeft, ChevronRight, Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type KeyboardEvent as ReactKeyboardEvent } from "react"
@@ -13,8 +13,10 @@ import { fill, type Dictionary } from "@/lib/i18n/dictionaries"
 import { formatAmount, formatDate, monthName, normalizeNumber, type Locale } from "@/lib/i18n/format"
 import { dictionaries } from "@/lib/i18n/dictionaries"
 import type { RuleConfig, RuleModel, SheetRow } from "@/lib/data/sheet"
+import { sheetAdminTexts } from "@/lib/i18n/sheet-admin"
 
-import { NO_DEPT, PALETTE } from "./palette"
+import { NO_DEPT, paletteFor, PALETTE } from "./palette"
+import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import {
   addEmployeeAction,
   approveMonthAction,
@@ -38,6 +40,8 @@ type Perms = {
   approve: boolean
   pay: boolean
   history: boolean
+  structure: boolean
+  deleteEmployee: boolean
 }
 
 type Props = {
@@ -47,10 +51,12 @@ type Props = {
   runStatus: string | null
   editable: boolean
   rows: SheetRow[]
-  departments: { id: string; name: string }[]
+  departments: SheetDepartment[]
   accounts: { id: string; name: string; currency: string }[]
   perms: Perms
 }
+
+type Undo = { employeeId: string; col: ColKey; before: string; after: string }
 
 type ColKey =
   | "name"
@@ -94,9 +100,47 @@ function addMonth(key: string, delta: number) {
 
 type Toast = { id: number; text: string; tone: "ok" | "error" }
 
+/** Text of a cell as the sheet shows it and copy puts on the clipboard. */
+function baseValue(row: SheetRow, col: ColKey, t: Dictionary): string {
+  switch (col) {
+    case "name": return row.name
+    case "department": return row.departmentName ?? ""
+    case "fix": return row.fix ?? ""
+    case "terms": return row.terms ?? ""
+    case "variable": return row.variable
+    case "bonus": return row.bonus === "0" ? "" : row.bonus
+    case "deduction": return row.deduction === "0" ? "" : row.deduction
+    case "kpiTarget": return row.kpiTarget ?? ""
+    case "kpiActual": return row.kpiActual ?? ""
+    case "calculated": return row.calculated
+    case "confirm": return row.confirmed ? "TRUE" : "FALSE"
+    case "approved": return row.approved ?? ""
+    case "paid": return row.paid
+    case "outstanding": return row.outstanding ?? ""
+    case "wallet": return row.wallet?.masked ?? ""
+    case "startWork": return row.hireDate
+    case "position": return row.position ?? ""
+    case "status": return t.sheet.employeeStatus[row.status as keyof Dictionary["sheet"]["employeeStatus"]] ?? row.status
+    case "teamLead": return row.isTeamLead ? "TRUE" : "FALSE"
+    case "currency": return row.currency
+    case "paymentStatus": return t.sheet.paymentStatus[row.paymentStatus as keyof Dictionary["sheet"]["paymentStatus"]]
+    case "paymentDate": return row.paymentDate ?? ""
+    case "notes": return row.notes ?? ""
+  }
+}
+
+
 export function FinancialSheet(props: Props) {
-  const { locale, monthKey, baseCurrency, rows, departments, perms, editable } = props
+  const { locale, monthKey, baseCurrency, rows, perms, editable } = props
   const t = dictionaries[locale] as Dictionary
+  const A = sheetAdminTexts[locale]
+  // Active departments drive the dropdowns and colors; archived ones are only in the department manager.
+  const departments = useMemo(() => props.departments.filter((d) => !d.archived), [props.departments])
+  const [panel, setPanel] = useState<null | "departments" | "addDepartment" | "archive" | "bulkFix">(null)
+  const [showFilters, setShowFilters] = useState(true)
+  const [inflight, setInflight] = useState(0)
+  const [bulkDept, setBulkDept] = useState("")
+  const undoStack = useRef<Undo[]>([])
   const router = useRouter()
   const [refreshing, startRefresh] = useTransition()
   const [deptFilter, setDeptFilter] = useState("")
@@ -131,8 +175,8 @@ export function FinancialSheet(props: Props) {
     setPending({})
   }
 
-  const deptIndex = useMemo(() => new Map(departments.map((d, i) => [d.id, i])), [departments])
-  const color = (id: string | null) => (id && deptIndex.has(id) ? PALETTE[deptIndex.get(id)! % PALETTE.length] : NO_DEPT)
+  const deptIndex = useMemo(() => new Map(departments.map((d, i) => [d.id, { i, color: d.color }])), [departments])
+  const color = (id: string | null) => (id && deptIndex.has(id) ? paletteFor(deptIndex.get(id)!.color, deptIndex.get(id)!.i) : NO_DEPT)
 
   const cols: Col[] = useMemo(() => {
     const canEdit = (p: boolean) => editable && p
@@ -183,38 +227,26 @@ export function FinancialSheet(props: Props) {
     (row: SheetRow, col: ColKey): string => {
       const p = pending[key(row, col)]
       if (p !== undefined) return p
-      switch (col) {
-        case "name": return row.name
-        case "department": return row.departmentName ?? ""
-        case "fix": return row.fix ?? ""
-        case "terms": return row.terms ?? ""
-        case "variable": return row.variable
-        case "bonus": return row.bonus === "0" ? "" : row.bonus
-        case "deduction": return row.deduction === "0" ? "" : row.deduction
-        case "kpiTarget": return row.kpiTarget ?? ""
-        case "kpiActual": return row.kpiActual ?? ""
-        case "calculated": return row.calculated
-        case "confirm": return row.confirmed ? "TRUE" : "FALSE"
-        case "approved": return row.approved ?? ""
-        case "paid": return row.paid
-        case "outstanding": return row.outstanding ?? ""
-        case "wallet": return row.wallet?.masked ?? ""
-        case "startWork": return row.hireDate
-        case "position": return row.position ?? ""
-        case "status": return t.sheet.employeeStatus[row.status as keyof Dictionary["sheet"]["employeeStatus"]] ?? row.status
-        case "teamLead": return row.isTeamLead ? "TRUE" : "FALSE"
-        case "currency": return row.currency
-        case "paymentStatus": return t.sheet.paymentStatus[row.paymentStatus as keyof Dictionary["sheet"]["paymentStatus"]]
-        case "paymentDate": return row.paymentDate ?? ""
-        case "notes": return row.notes ?? ""
-      }
+      return baseValue(row, col, t)
     },
     [pending, t],
   )
 
   // ── Saving ──
 
-  async function saveCell(row: SheetRow, col: Col, input: string, { quiet = false } = {}) {
+  /** What the server last sent for a cell, in the form the server compares (department id, status code…). */
+  function serverValue(row: SheetRow, col: ColKey) {
+    switch (col) {
+      case "department": return row.departmentId ?? ""
+      case "status": return row.status
+      case "teamLead": return String(row.isTeamLead)
+      case "bonus": return row.bonus
+      case "deduction": return row.deduction
+      default: return baseValue(row, col, t)
+    }
+  }
+
+  async function saveCell(row: SheetRow, col: Col, input: string, { quiet = false, expected, undoable = true }: { quiet?: boolean; expected?: string; undoable?: boolean } = {}) {
     if (!col.can || !col.field) return false
     let value = input.trim()
     if (col.kind === "money") {
@@ -238,26 +270,58 @@ export function FinancialSheet(props: Props) {
       if (!match) return false
       value = match
     }
-    if (col.key === "currency") value = value.toUpperCase()
+    if (col.key === "currency") {
+      value = value.toUpperCase()
+      if (!(CURRENCIES as readonly string[]).includes(value)) {
+        toast(`${t.sheet.col.currency}: "${input}"? (${CURRENCIES.join(", ")})`, "error")
+        return false
+      }
+    }
     if (col.key === "teamLead") value = /^(true|1|yes|да|x|✓)$/i.test(value) ? "true" : "false"
     if (col.key === "startWork") {
       const ru = /^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/.exec(value)
       if (ru) value = `${ru[3].length === 2 ? `20${ru[3]}` : ru[3]}-${ru[2].padStart(2, "0")}-${ru[1].padStart(2, "0")}`
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) {
+        toast(`${t.sheet.col.startWork}: "${input}"?`, "error")
+        return false
+      }
     }
+    const before = expected ?? serverValue(row, col.key)
     setPending((p) => ({ ...p, [key(row, col.key)]: col.kind === "money" || col.key === "startWork" ? value : input }))
-    const result = await updateCellAction(monthKey, row.employeeId, col.field, value)
+    setInflight((n) => n + 1)
+    const result = await updateCellAction(monthKey, row.employeeId, col.field, value, col.key === "wallet" ? null : before).catch(() => ({ ok: false as const, message: locale === "ru" ? "Соединение прервано" : "Connection lost" }))
+    setInflight((n) => n - 1)
     if (!result.ok) {
       setPending((p) => {
         const next = { ...p }
         delete next[key(row, col.key)]
         return next
       })
-      toast(result.message, "error")
+      if ("conflict" in result && result.conflict) {
+        toast(fill(A.conflict, { current: result.conflict.current || "—" }), "error")
+        refresh()
+      } else toast(result.message, "error")
       return false
     }
+    if (undoable && col.key !== "wallet") undoStack.current = [...undoStack.current.slice(-49), { employeeId: row.employeeId, col: col.key, before, after: value }]
     if (!quiet) toast(result.unconfirmed ? `${t.sheet.rowsSaved} · ${t.sheet.changedAfterConfirm}` : t.sheet.rowsSaved)
     return true
   }
+
+  /** Reverts the last saved cell (only if nobody changed it since). */
+  async function undo() {
+    const last = undoStack.current.pop()
+    if (!last) return toast(A.nothingToUndo)
+    const row = rows.find((r) => r.employeeId === last.employeeId)
+    const col = cols.find((c) => c.key === last.col)
+    if (!row || !col) return
+    const before = (last.col === "bonus" || last.col === "deduction") && last.before === "0" ? "" : last.before
+    if (await saveCell(row, col, before, { quiet: true, expected: last.after, undoable: false })) {
+      toast(A.undone)
+      refresh()
+    }
+  }
+
 
   async function toggle(row: SheetRow, col: Col) {
     if (!col.can) return
@@ -357,7 +421,7 @@ export function FinancialSheet(props: Props) {
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (editing || termsFor || payFor || historyFor) return
+    if (editing || termsFor || payFor || historyFor || panel) return
     const mod = event.metaKey || event.ctrlKey
     if (mod && event.key.toLowerCase() === "c") {
       event.preventDefault()
@@ -365,6 +429,11 @@ export function FinancialSheet(props: Props) {
       return
     }
     if (mod && event.key.toLowerCase() === "v") return // handled by the paste event
+    if (mod && event.key.toLowerCase() === "z") {
+      event.preventDefault()
+      void undo()
+      return
+    }
     switch (event.key) {
       case "ArrowUp": event.preventDefault(); return move(-1, 0, event.shiftKey)
       case "ArrowDown": event.preventDefault(); return move(1, 0, event.shiftKey)
@@ -453,6 +522,38 @@ export function FinancialSheet(props: Props) {
   const grand = totalsFor(visible)
   const unconfirmed = rows.filter((r) => !r.confirmed || r.stale).length
 
+  // ── Bulk actions on the selected rows ──
+
+  const selectedRows = anchor && selection.r2 > selection.r1 ? visible.slice(selection.r1, selection.r2 + 1) : []
+  const colOf = (k: ColKey) => cols.find((c) => c.key === k)
+
+  async function bulk(list: SheetRow[], action: (row: SheetRow) => Promise<boolean>) {
+    setBusy(true)
+    let ok = 0
+    for (const row of list) if (await action(row)) ok++
+    setBusy(false)
+    toast(fill(A.bulkDone, { ok, n: list.length }), ok === list.length ? "ok" : "error")
+    refresh()
+  }
+
+  async function bulkDepartment() {
+    const dept = departments.find((d) => d.id === bulkDept)
+    const col = colOf("department")
+    if (!dept || !col?.can) return
+    if (!window.confirm(fill(A.bulkDepartmentConfirm, { n: selectedRows.length, dept: dept.name, month: monthTitle }))) return
+    await bulk(selectedRows, (row) => (row.departmentId === dept.id ? Promise.resolve(true) : saveCell(row, col, dept.id, { quiet: true })))
+  }
+
+  async function bulkArchive() {
+    if (!window.confirm(fill(A.bulkArchiveConfirm, { n: selectedRows.length }))) return
+    await bulk(selectedRows, async (row) => {
+      const r = await archiveEmployeeAction(row.employeeId, true)
+      if (!r.ok) toast(`${row.name}: ${r.message}`, "error")
+      return r.ok
+    })
+    setAnchor(null)
+  }
+
   // ── Export ──
 
   function exportCsv() {
@@ -500,6 +601,33 @@ export function FinancialSheet(props: Props) {
           <p className="max-w-2xl text-sm text-muted-foreground">{t.sheet.description}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <span className="flex h-8 min-w-20 items-center gap-1.5 text-[11px] text-muted-foreground" aria-live="polite">
+            {inflight > 0 ? <><Loader2 className="size-3.5 animate-spin text-primary" /> {A.saving}</> : null}
+          </span>
+          {editable && perms.employee && perms.salary && (
+            <Button variant="outline" size="sm" onClick={() => document.getElementById("sheet-new-employee")?.focus()}>
+              <UserPlus /> {A.toolbar.employee}
+            </Button>
+          )}
+          {perms.structure && (
+            <Button variant="outline" size="sm" onClick={() => setPanel("addDepartment")}>
+              <Plus /> {A.toolbar.department}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => setPanel("departments")}>
+            <Building2 /> {A.toolbar.departments}
+          </Button>
+          {perms.employee && (
+            <Button variant="outline" size="sm" onClick={() => setPanel("archive")}>
+              <Archive /> {A.toolbar.archive}
+            </Button>
+          )}
+          <Button variant={showFilters ? "secondary" : "outline"} size="sm" aria-pressed={showFilters} onClick={() => setShowFilters((v) => !v)}>
+            <Filter /> {A.toolbar.filters}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void undo()} title="Ctrl/Cmd+Z">
+            <Undo2 /> {A.toolbar.undo}
+          </Button>
           <Button variant="outline" size="sm" onClick={exportCsv}>
             <Download /> {t.common.export}
           </Button>
@@ -511,8 +639,27 @@ export function FinancialSheet(props: Props) {
         </div>
       </div>
 
+      {/* Bulk actions for a multi-row selection (Shift+click or Shift+arrows) */}
+      {selectedRows.length > 1 && editable && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
+          <span className="font-semibold text-primary">{fill(A.selected, { n: selectedRows.length })}</span>
+          {perms.employee && (
+            <>
+              <Select value={bulkDept} onChange={(e) => setBulkDept(e.target.value)} className="h-7 w-48 text-xs" aria-label={A.bulkDepartment}>
+                <option value="">{A.bulkDepartment}…</option>
+                {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </Select>
+              <Button size="sm" variant="outline" disabled={!bulkDept || busy} onClick={bulkDepartment}>{A.apply}</Button>
+            </>
+          )}
+          {perms.salary && <Button size="sm" variant="outline" disabled={busy} onClick={() => setPanel("bulkFix")}>{A.bulkFix}</Button>}
+          {perms.employee && <Button size="sm" variant="outline" disabled={busy} onClick={bulkArchive}><Archive /> {A.bulkArchive}</Button>}
+          <Button size="sm" variant="ghost" onClick={() => setAnchor(null)}>{A.cancel}</Button>
+        </div>
+      )}
+
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className={cn("flex flex-wrap items-center gap-2", !showFilters && "hidden")}>
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.sheet.searchPlaceholder} className="h-9 w-64 pl-9" aria-label={t.common.search} />
@@ -706,7 +853,7 @@ export function FinancialSheet(props: Props) {
       </div>
       {grand.excluded > 0 && <p className="text-xs text-amber-300/80">{fill(t.sheet.mixedCurrency, { n: grand.excluded })}</p>}
 
-      {editable && perms.employee && perms.salary && <AddEmployee monthKey={monthKey} departments={departments} t={t} toast={toast} onDone={refresh} />}
+      {editable && perms.employee && perms.salary && <AddEmployee monthKey={monthKey} departments={departments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
 
       {termsFor && (
         <TermsDialog
@@ -740,6 +887,52 @@ export function FinancialSheet(props: Props) {
         />
       )}
       {historyFor && <HistoryDialog row={historyFor} locale={locale} t={t} onClose={() => setHistoryFor(null)} />}
+      {(panel === "departments" || panel === "addDepartment") && (
+        <DepartmentManager
+          departments={props.departments}
+          monthKey={monthKey}
+          monthTitle={monthTitle}
+          canManage={perms.structure}
+          focusAdd={panel === "addDepartment"}
+          t={A}
+          toast={toast}
+          onChanged={refresh}
+          onClose={() => {
+            setPanel(null)
+            gridRef.current?.focus()
+          }}
+        />
+      )}
+      {panel === "archive" && (
+        <ArchivePanel
+          t={A}
+          canManage={perms.employee}
+          canDelete={perms.deleteEmployee}
+          toast={toast}
+          onChanged={refresh}
+          onClose={() => {
+            setPanel(null)
+            gridRef.current?.focus()
+          }}
+        />
+      )}
+      {panel === "bulkFix" && (
+        <BulkFixDialog
+          rows={selectedRows.map((r) => ({ employeeId: r.employeeId, name: r.name, fix: r.fix, currency: r.currency }))}
+          t={A}
+          locale={locale}
+          monthTitle={monthTitle}
+          onClose={() => setPanel(null)}
+          onApply={async (changes) => {
+            const col = colOf("fix")
+            if (!col) return
+            await bulk(
+              selectedRows.filter((r) => changes.some((c) => c.employeeId === r.employeeId)),
+              (row) => saveCell(row, col, changes.find((c) => c.employeeId === row.employeeId)!.fix, { quiet: true }),
+            )
+          }}
+        />
+      )}
 
       <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col items-end gap-2" aria-live="polite">
         {toasts.map((x) => (
@@ -1189,13 +1382,14 @@ function HistoryDialog({ row, locale, t, onClose }: { row: SheetRow; locale: Loc
   )
 }
 
-function AddEmployee({ monthKey, departments, t, toast, onDone }: { monthKey: string; departments: { id: string; name: string }[]; t: Dictionary; toast: (text: string, tone?: "ok" | "error") => void; onDone: () => void }) {
+/** The empty row under the table: type a name, department and FIX, press Enter. */
+function AddEmployee({ monthKey, departments, t, hint, toast, onDone }: { monthKey: string; departments: { id: string; name: string }[]; t: Dictionary; hint: string; toast: (text: string, tone?: "ok" | "error") => void; onDone: () => void }) {
   const [form, setForm] = useState({ name: "", departmentId: departments[0]?.id ?? "", fix: "", currency: "USD", hireDate: "" })
   const [saving, setSaving] = useState(false)
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }))
   return (
     <form
-      className="flex flex-wrap items-end gap-2 rounded-2xl border border-dashed border-border bg-card/30 p-4"
+      className="-mt-3 flex flex-wrap items-end gap-2 rounded-b-2xl border border-t-0 border-dashed border-primary/30 bg-card/30 px-3 py-2"
       onSubmit={async (e) => {
         e.preventDefault()
         const fix = normalizeNumber(form.fix)
@@ -1209,9 +1403,9 @@ function AddEmployee({ monthKey, departments, t, toast, onDone }: { monthKey: st
         onDone()
       }}
     >
-      <p className="mb-2 w-full text-xs font-semibold uppercase tracking-[0.16em] text-primary">{t.sheet.addEmployee}</p>
+      <p className="w-full text-[11px] text-muted-foreground"><Plus className="mr-1 inline size-3 text-primary" />{hint}</p>
       <Labeled label={t.sheet.add.name}>
-        <Input value={form.name} onChange={set("name")} required maxLength={160} className="w-52" />
+        <Input id="sheet-new-employee" value={form.name} onChange={set("name")} required maxLength={160} className="h-8 w-52" />
       </Labeled>
       <Labeled label={t.sheet.add.department}>
         <Select value={form.departmentId} onChange={set("departmentId")} required className="w-52">

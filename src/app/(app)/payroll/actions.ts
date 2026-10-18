@@ -14,16 +14,28 @@ import {
   setCompensationRule,
   setEmployeeArchived,
   setRowConfirmed,
+  SheetConflictError,
   updateSheetCell,
   type RuleConfig,
   type SheetField,
 } from "@/lib/data/sheet"
+import {
+  createSheetDepartment,
+  deleteDepartment,
+  deleteEmployee,
+  listArchivedEmployees,
+  listSheetDepartments,
+  mergeDepartments,
+  renameDepartment,
+  setDepartmentColor,
+  setSheetDepartmentArchived,
+} from "@/lib/data/sheet-admin"
 import { addLedgerEntry, deleteLedgerEntry, recordSettlement, setLedgerConfirmed, updateLedgerEntry } from "@/lib/data/project-ledger"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { Decimal } from "@/lib/money"
 import { parseMonth } from "@/lib/period"
 
-export type CellResult = { ok: true; unconfirmed?: boolean } | { ok: false; message: string }
+export type CellResult = { ok: true; unconfirmed?: boolean } | { ok: false; message: string; conflict?: { current: string } }
 
 const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet"]
 
@@ -50,14 +62,16 @@ function done<T extends object>(extra?: T) {
   return { ok: true as const, ...extra }
 }
 
-export async function updateCellAction(monthKey: string, employeeId: string, field: string, value: string): Promise<CellResult> {
+/** expected: the cell value the user saw; a different current value is a conflict (nothing is written). */
+export async function updateCellAction(monthKey: string, employeeId: string, field: string, value: string, expected?: string | null): Promise<CellResult> {
   try {
     if (!FIELDS.includes(field as SheetField)) throw new UserInputError("Unknown column.")
     const user = await authorize(requiredPermission(field as SheetField))
-    if (value.length > 2000) throw new UserInputError("Value is too long.")
-    const result = await updateSheetCell(user, month(monthKey), employeeId, field as SheetField, value)
+    if (value.length > 2000 || (expected?.length ?? 0) > 2000) throw new UserInputError("Value is too long.")
+    const result = await updateSheetCell(user, month(monthKey), employeeId, field as SheetField, value, undefined, typeof expected === "string" ? expected : null)
     return done(result)
   } catch (error) {
+    if (error instanceof SheetConflictError) return { ok: false, message: error.message, conflict: { current: error.current } }
     return fail(error)
   }
 }
@@ -270,6 +284,96 @@ export async function settleLedgerAction(kind: string, id: string, input: { amou
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new UserInputError("Choose the date.")
     await recordSettlement(user, kindOf(kind), id, { amount: amount ? new Decimal(amount) : null, financialAccountId: input.financialAccountId, date: new Date(`${input.date}T00:00:00Z`) })
     return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+// ── Employee and department administration from the sheet ──
+
+const done2 = () => {
+  revalidatePath("/employees")
+  revalidatePath("/departments")
+  revalidatePath("/profitability")
+  return done()
+}
+
+export async function deleteEmployeeAction(employeeId: string, confirmName: string): Promise<CellResult> {
+  try {
+    await deleteEmployee(await authorize("employee:manage"), employeeId, String(confirmName ?? ""))
+    return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function archivedEmployeesAction() {
+  try {
+    return { ok: true as const, employees: await listArchivedEmployees(await sessionUser()) }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function sheetDepartmentsAction(monthKey: string) {
+  try {
+    return { ok: true as const, departments: await listSheetDepartments(await authorize("payroll:read"), month(monthKey)) }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function createDepartmentAction(input: { name: string; color: string | null; costClassification: string }): Promise<CellResult> {
+  try {
+    const classification = input.costClassification === "COST_OF_SALES" ? "COST_OF_SALES" : "OPERATING_EXPENSE"
+    await createSheetDepartment(await authorize("structure:manage"), { name: String(input.name ?? ""), color: input.color, costClassification: classification })
+    return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function renameDepartmentAction(id: string, name: string): Promise<CellResult> {
+  try {
+    await renameDepartment(await authorize("structure:manage"), id, String(name ?? ""))
+    return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function departmentColorAction(id: string, color: string | null): Promise<CellResult> {
+  try {
+    await setDepartmentColor(await authorize("structure:manage"), id, color)
+    return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function archiveDepartmentAction(id: string, archived: boolean, monthKey: string): Promise<CellResult> {
+  try {
+    await setSheetDepartmentArchived(await authorize("structure:manage"), id, archived, month(monthKey))
+    return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function deleteDepartmentAction(id: string): Promise<CellResult> {
+  try {
+    await deleteDepartment(await authorize("structure:manage"), id)
+    return done2()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function mergeDepartmentsAction(sourceId: string, targetId: string, monthKey: string, confirmed: boolean): Promise<CellResult> {
+  try {
+    if (confirmed !== true) throw new UserInputError("Confirm the merge first.")
+    await mergeDepartments(await authorize("structure:manage"), sourceId, targetId, month(monthKey))
+    return done2()
   } catch (error) {
     return fail(error)
   }

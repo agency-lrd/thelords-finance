@@ -14,7 +14,7 @@ import { dictionaries, fill, type Dictionary } from "@/lib/i18n/dictionaries"
 import { formatAmount, normalizeNumber, type Locale } from "@/lib/i18n/format"
 
 import { addLedgerAction, confirmLedgerAction, deleteLedgerAction, settleLedgerAction, updateLedgerAction, type LedgerFormInput } from "./actions"
-import { NO_DEPT, PALETTE } from "./palette"
+import { NO_DEPT, paletteFor, PALETTE } from "./palette"
 
 type Ledger = Awaited<ReturnType<typeof getProjectLedger>>
 type Row = Ledger["income"][number] | Ledger["costs"][number]
@@ -44,8 +44,8 @@ export function ProjectLedger(props: Props) {
   const editable = props.canManage && props.open
 
   const colorOf = useMemo(() => {
-    const index = new Map(ledger.departments.map((d, i) => [d.id, i]))
-    return (id: string | null) => (id && index.has(id) ? PALETTE[index.get(id)! % PALETTE.length] : NO_DEPT)
+    const index = new Map(ledger.departments.map((d, i) => [d.id, { i, color: d.color }]))
+    return (id: string | null) => (id && index.has(id) ? paletteFor(index.get(id)!.color, index.get(id)!.i) : NO_DEPT)
   }, [ledger.departments])
 
   const money = (v: Decimal | string) => formatAmount(new Decimal(v).toString(), baseCurrency, locale)

@@ -794,6 +794,7 @@ model Department {
   name               String
   description        String?
   costClassification CategoryKind @default(OPERATING_EXPENSE) @map("cost_classification")
+  color              String?      @db.VarChar(20) // palette key for the department color in the financial sheet
   headEmployeeId     String?      @unique @map("head_employee_id") @db.Uuid
   archivedAt         DateTime?    @map("archived_at") @db.Timestamptz(6)
   createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
