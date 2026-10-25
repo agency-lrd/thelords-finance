@@ -102,11 +102,37 @@ AI tests never call the AI provider.
 - **No file uploads.** Attachments are links (for example Google Drive); there is no Supabase Storage upload.
 - **Shared costs are not allocated.** Costs without a department appear only in company totals, not in
   department profitability.
-- **No recurring expenses.** Each transaction is entered once; there is no template or schedule yet.
+- **Recurring costs exist only on the project ledger** (marked recurring, carried month to month as plans).
+  Transactions themselves have no schedule.
 - **Department heads with department-scoped roles see no reports yet.** The session loads organization-wide
   permissions only.
 - **No user-management page.** `src/lib/data/access.ts` is ready but has no UI.
-- **Approved payroll months cannot be corrected in the UI.** There is no off-cycle correction run yet.
+- **Approved payroll months can be re-opened only before any salary payment** ("Отменить утверждение"). After a
+  payment, corrections need the payment reversed first; there is no off-cycle correction run yet.
+- **Cash Flow has no per-account filter.** It shows the balance of every account; the Transactions page filters
+  by account.
+- **Account balances are shown in the base currency** at each entry's rate, labelled with the account currency.
+- **Password vault needs `VAULT_ENCRYPTION_KEYS`** in the server environment; until then it is disabled.
+
+## 2026-10-25: CRM restructuring (financial sheet, cash register, reports, vault, performance)
+
+- Financial sheet: PROFIT and KPI Profit manual, KPI Bonus = commission % x profit above KPI (10% default for new
+  employees), Manual Bonus, FACT PAYMENT override (reason required below the calculation, explicit payslip
+  line), Confirm after FACT PAYMENT, prorated FIX (30-day convention, organization settings), audited
+  "Отменить утверждение" (versions kept, accrual reversed), rollover modal with previous vs new values.
+- Cash register: owner-facing kinds on top of the double-entry templates (client payment, pass-through client
+  budget, owner/investor/loan kinds, transfers); salary payments against approved payslips shown in
+  Transactions; Owners page shows the same records; client categories and client report (cash vs revenue).
+- Influence teams (custom names, order, employees, team P&L) and recurring costs carried as plans.
+- P&L plain-Russian names, "not yet included" panel, direction gross profit view; Cash Flow month-end balance
+  by account; analytics headcount fixed (distinct people on the month's sheet), NPS hidden; Overview without
+  debtors/creditors.
+- Navigation: AI CFO first; balance sheet, budgets, employees, departments, categories, profitability out of the
+  menu (pages kept); "Отделы и категории" screen; plans with "Зафиксировать план" in AI CFO.
+- Encrypted password vault (AES-256-GCM, dedicated rotatable key, Super Admin, fresh password check, audit).
+- Performance: Overview 98 -> 30 database calls, grouped department queries, no duplicate sheet reloads,
+  functions pinned to Dublin (dub1) next to the Supabase database in eu-west-1.
+- Tests: test:sheet-pay (11), test:register (13), vault secrets (6 new steps).
 
 ## Next steps
 
