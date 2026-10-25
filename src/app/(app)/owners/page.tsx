@@ -18,15 +18,17 @@ import { OwnersView } from "./owners-view"
 
 export const metadata: Metadata = { title: "Собственники" }
 
-export default function OwnersPage() {
+export default function OwnersPage({ searchParams }: PageProps<"/owners">) {
   return (
     <Suspense fallback={<PageSkeleton title="Собственники" />}>
-      <Owners />
+      <Owners searchParams={searchParams} />
     </Suspense>
   )
 }
 
-async function Owners() {
+async function Owners({ searchParams }: { searchParams: PageProps<"/owners">["searchParams"] }) {
+  const params = await searchParams
+  const month = typeof params.p === "string" && /^\d{4}-\d{2}$/.test(params.p) ? params.p : ""
   const user = await requirePageAccess("ownership:read")
   const { locale } = await getDictionary()
   const today = new Date(new Date().toISOString().slice(0, 10))
@@ -41,7 +43,8 @@ async function Owners() {
     canReports ? cashBalance(prisma, user.organizationId, today) : null,
   ])
   const canLedger = can(user, "ledger:read")
-  const [movements, options] = await Promise.all([ownerMovements(user), canLedger ? transactionOptions(user) : null])
+  const [allMovements, options] = await Promise.all([ownerMovements(user), canLedger ? transactionOptions(user) : null])
+  const movements = month ? allMovements.filter((m) => m.date.startsWith(month)) : allMovements
   const distributedYtd = distributions
     .filter((d) => (d.status === "APPROVED" || d.status === "PAID") && d.declaredDate.startsWith(String(year)))
     .reduce((a, d) => a.add(d.totalAmount), new Decimal(0))
@@ -60,6 +63,7 @@ async function Owners() {
       locale={locale}
       currency={user.baseCurrency}
       rows={movements}
+      month={month}
       options={options ? { ...options, accounts: options.accounts.filter((a) => a.type !== "LOAN" && a.type !== "CREDIT_CARD") } : { accounts: [], departments: [], clients: [], clientCategories: [], teams: [], projects: [], shareholders: [], categories: [] }}
       canCreate={can(user, "journal:create")}
     />

@@ -4,6 +4,8 @@ import { Suspense } from "react"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { can, requireUser } from "@/lib/auth/session"
 import { ACCESS_LEVELS, listCredentials, listVaultCategories, shareCandidates } from "@/lib/data/vault"
+import { credentialsWithSecret } from "@/lib/data/vault-secrets"
+import { vaultConfigured } from "@/lib/vault/secrets"
 import { getDictionary } from "@/lib/i18n/server"
 import { prisma } from "@/lib/db"
 
@@ -35,12 +37,13 @@ async function Vault({ searchParams }: { searchParams: PageProps<"/vault">["sear
     archived: s("archived") === "1",
   }
   const manage = can(user, "vault:manage")
-  const [rows, categories, departments, employees, candidates] = await Promise.all([
+  const [rows, categories, departments, employees, candidates, secrets] = await Promise.all([
     listCredentials(user, filters),
     listVaultCategories(user),
     prisma.department.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.employee.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: { firstName: "asc" }, select: { id: true, firstName: true, lastName: true } }),
     shareCandidates(user),
+    credentialsWithSecret(user),
   ])
   return (
     <VaultView
@@ -52,6 +55,7 @@ async function Vault({ searchParams }: { searchParams: PageProps<"/vault">["sear
       candidates={candidates}
       filters={{ q: s("q"), dept: s("dept"), cat: s("cat"), level: s("level"), archived: s("archived") }}
       perms={{ manage, audit: can(user, "vault:audit") }}
+      secrets={{ configured: vaultConfigured(), superAdmin: user.isSuperAdmin, ids: secrets.map((x) => x.credentialId) }}
     />
   )
 }

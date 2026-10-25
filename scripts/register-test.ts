@@ -198,6 +198,22 @@ async function main() {
       assert.equal(team.previous.revenue, "5000")
       assert.equal(team.previous.direct, "800")
     })
+
+    await step("AI CFO plans: a fixed plan cannot change; plan vs actual vs variance; nothing operational is written", async () => {
+      const plans = await import("../src/lib/data/plans")
+      const before = await prisma.transaction.count()
+      const id = await plans.savePlan(admin, { name: "October base", month: oct, assumptions: "2 new hires", revenue: new Decimal(12000), directCosts: null, operatingExpenses: null, payroll: new Decimal(1000), hiringCost: new Decimal(500), profit: null, cashBalance: new Decimal(25000), fix: true }, prisma)
+      await assert.rejects(() => plans.savePlan(admin, { id, name: "Changed", month: oct, assumptions: null, revenue: new Decimal(1), directCosts: null, operatingExpenses: null, payroll: null, hiringCost: null, profit: null, cashBalance: null, fix: false }, prisma), /fixed/)
+      await prisma.$executeRawUnsafe(`CREATE TEMP TABLE IF NOT EXISTS rule_result (message text); TRUNCATE rule_result;`)
+      await prisma.$executeRawUnsafe(`DO $$ BEGIN BEGIN UPDATE financial_plans SET revenue = 1 WHERE id = '${id}'; INSERT INTO rule_result VALUES ('accepted'); EXCEPTION WHEN OTHERS THEN INSERT INTO rule_result VALUES (SQLERRM); END; END $$;`)
+      const [res] = await prisma.$queryRawUnsafe<{ message: string }[]>(`SELECT message FROM rule_result`)
+      assert.match(res.message, /cannot be changed/)
+      const [p] = await plans.plansWithActuals(admin, oct, prisma)
+      assert.deepEqual([p.rows.revenue.plan, p.rows.revenue.actual, p.rows.revenue.variance, p.rows.revenue.variancePct], ["12000", "10000", "-2000", "-16.7"])
+      assert.equal(p.rows.profit.plan, "10500", "expected profit = revenue - payroll - hiring")
+      assert.equal(await prisma.transaction.count(), before)
+      await plans.archivePlan(admin, id, true, prisma)
+    })
   } finally {
     summary()
     await stop()

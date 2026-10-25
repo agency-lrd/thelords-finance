@@ -1,6 +1,8 @@
 "use server"
 
+import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
+import { cookies } from "next/headers"
 
 import { getSession } from "@/lib/auth/session"
 import { AuthorizationError } from "@/lib/authz/server"
@@ -18,7 +20,11 @@ import {
   updateCredential,
   type CredentialInput,
 } from "@/lib/data/vault"
+import { deleteVaultSecret, revealVaultSecret, rotateVaultKeys, setVaultSecret } from "@/lib/data/vault-secrets"
+import { prisma } from "@/lib/data/db"
 import { toActionError, UserInputError } from "@/lib/forms"
+import { getSupabaseEnv } from "@/lib/supabase/env"
+import { issueUnlockToken, UNLOCK_COOKIE, UNLOCK_SECONDS, vaultConfigured, verifyUnlockToken } from "@/lib/vault/secrets"
 
 const UUID = /^[0-9a-f-]{36}$/i
 type Ok<T = object> = ({ ok: true } & T) | { ok: false; message: string }
@@ -123,6 +129,74 @@ export async function createCategoryAction(name: string): Promise<Ok> {
   try {
     await createVaultCategory(await user(), name)
     return done()
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+// ── Stored passwords (Super Admin only; viewing/copying needs a fresh password check) ──
+
+export async function unlockVaultAction(password: string): Promise<Ok<{ expiresIn: number }>> {
+  try {
+    const u = await user()
+    if (!u.isSuperAdmin) throw new UserInputError("Only the Super Admin can view stored passwords.")
+    if (!vaultConfigured()) throw new UserInputError("Password storage is not configured: VAULT_ENCRYPTION_KEYS is missing on the server.")
+    if (typeof password !== "string" || !password || password.length > 500) throw new UserInputError("Enter your password.")
+    // Re-check the account password with Supabase in a throwaway, non-persisting client, then end that
+    // extra session only (the user's own session is untouched).
+    const { url, publishableKey } = getSupabaseEnv()
+    const client = createSupabaseClient(url, publishableKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } })
+    const { data, error } = await client.auth.signInWithPassword({ email: u.email, password })
+    const ok = !error && data.user?.id !== undefined
+    if (ok) await client.auth.signOut({ scope: "local" }).catch(() => undefined)
+    await prisma.auditLog.create({ data: { organizationId: u.organizationId, actorType: "USER", actorUserId: u.id, action: ok ? "vault.unlock" : "vault.unlock_failed", entityType: "vault", entityId: null } })
+    if (!ok) throw new UserInputError("The password is not correct.")
+    const store = await cookies()
+    store.set(UNLOCK_COOKIE, issueUnlockToken(u.id), { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", path: "/", maxAge: UNLOCK_SECONDS })
+    return { ok: true, expiresIn: UNLOCK_SECONDS }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export async function revealSecretAction(id: string, purpose: "view" | "copy"): Promise<Ok<{ secret: string }> | { ok: false; message: string; needsUnlock: true }> {
+  try {
+    if (!UUID.test(id)) throw new UserInputError("Entry not found.")
+    const u = await user()
+    const unlocked = verifyUnlockToken((await cookies()).get(UNLOCK_COOKIE)?.value, u.id)
+    if (!unlocked) return { ok: false, message: "FRESH_AUTH_REQUIRED", needsUnlock: true }
+    const secret = await revealVaultSecret(u, id, { unlocked, purpose: purpose === "copy" ? "copy" : "view" })
+    return { ok: true, secret }
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export async function setSecretAction(id: string, password: string): Promise<Ok> {
+  try {
+    if (!UUID.test(id)) throw new UserInputError("Entry not found.")
+    await setVaultSecret(await user(), id, password)
+    return done()
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export async function deleteSecretAction(id: string): Promise<Ok> {
+  try {
+    if (!UUID.test(id)) throw new UserInputError("Entry not found.")
+    await deleteVaultSecret(await user(), id)
+    return done()
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+export async function rotateVaultKeysAction(): Promise<Ok<{ rotated: number }>> {
+  try {
+    const r = await rotateVaultKeys(await user())
+    done()
+    return { ok: true, rotated: r.rotated }
   } catch (e) {
     return fail(e)
   }

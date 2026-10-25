@@ -31,7 +31,7 @@ export async function booksStatus(user: SessionUser, db: Db = prisma) {
     { key: "clients", done: row.clients > 0, count: row.clients, href: "/payroll" },
     { key: "transactions", done: row.posted > 0, count: row.posted, href: "/transactions" },
     { key: "payroll", done: row.payroll > 0, count: row.payroll, href: "/payroll" },
-    { key: "budgets", done: row.budgets > 0, count: row.budgets, href: "/budgets" },
+    { key: "budgets", done: row.budgets > 0, count: row.budgets, href: "/ai-cfo#plans" },
     { key: "targets", done: row.targets > 0, count: row.targets, href: "/ai-cfo#targets" },
   ]
   const iso = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null)

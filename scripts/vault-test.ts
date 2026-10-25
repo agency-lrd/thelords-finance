@@ -3,7 +3,7 @@
  * Usage: npm run test:vault
  */
 import assert from "node:assert/strict"
-import { randomUUID } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 
 import { startTestDb, stepRunner } from "./lib/test-db"
 
@@ -104,6 +104,64 @@ async function main() {
     await step("no column anywhere can hold a password", async () => {
       const cols = await prisma.$queryRaw<{ c: string }[]>`SELECT column_name AS c FROM information_schema.columns WHERE table_name LIKE 'vault_%' AND column_name ~* '(pass|secret|token|seed|private)'`
       assert.deepEqual(cols, [])
+    })
+
+    console.log("stored passwords")
+    const secrets = await import("../src/lib/data/vault-secrets")
+    const crypto = await import("../src/lib/vault/secrets")
+    const PASSWORD = "Sup3r-Secret-Value!42"
+    await step("without a vault key the feature is off (no plaintext fallback)", async () => {
+      delete process.env.VAULT_ENCRYPTION_KEYS
+      assert.equal(crypto.vaultConfigured(), false)
+      await assert.rejects(() => secrets.setVaultSecret(admin, adsId, PASSWORD, prisma), /not configured/)
+      process.env.VAULT_ENCRYPTION_KEYS = `k1:${randomBytes(32).toString("base64")}`
+      assert.equal(crypto.vaultConfigured(), true)
+    })
+    await step("only the Super Admin stores passwords; the database holds ciphertext only", async () => {
+      await assert.rejects(() => secrets.setVaultSecret(owner, adsId, PASSWORD, prisma), /Super Admin/)
+      await secrets.setVaultSecret(admin, adsId, PASSWORD, prisma)
+      const row = await prisma.vaultSecret.findUniqueOrThrow({ where: { credentialId: adsId } })
+      assert.equal(row.keyId, "k1")
+      assert.ok(!Buffer.from(row.ciphertext).toString("utf8").includes(PASSWORD) && !Buffer.from(row.ciphertext).toString("base64").includes(Buffer.from(PASSWORD).toString("base64")))
+      // List queries never carry the secret.
+      const listed = JSON.stringify(await vault.listCredentials(admin, {}, prisma))
+      assert.ok(!listed.includes(PASSWORD) && !listed.includes("ciphertext"))
+    })
+    await step("viewing needs a fresh password check; values never reach the audit log", async () => {
+      await assert.rejects(() => secrets.revealVaultSecret(admin, adsId, { unlocked: false, purpose: "view" }, prisma), /FRESH_AUTH_REQUIRED/)
+      await assert.rejects(() => secrets.revealVaultSecret(owner, adsId, { unlocked: true, purpose: "view" }, prisma), /Super Admin/)
+      assert.equal(await secrets.revealVaultSecret(admin, adsId, { unlocked: true, purpose: "view" }, prisma), PASSWORD)
+      assert.equal(await secrets.revealVaultSecret(admin, adsId, { unlocked: true, purpose: "copy" }, prisma), PASSWORD)
+      const logs = await prisma.auditLog.findMany({ where: { action: { startsWith: "vault.secret" } } })
+      assert.deepEqual(logs.map((l) => l.action).sort(), ["vault.secret.copy", "vault.secret.reveal", "vault.secret.set"])
+      assert.ok(!JSON.stringify(logs, (_k, v) => (typeof v === "bigint" ? v.toString() : v)).includes(PASSWORD))
+      // Unlock tokens: bound to the user and short-lived.
+      const token = crypto.issueUnlockToken(admin.id)
+      assert.equal(crypto.verifyUnlockToken(token, admin.id), true)
+      assert.equal(crypto.verifyUnlockToken(token, owner.id), false)
+      assert.equal(crypto.verifyUnlockToken(token, admin.id, Date.now() + 11 * 60_000), false)
+      assert.equal(crypto.verifyUnlockToken(`${token}x`, admin.id), false)
+    })
+    await step("a ciphertext moved to another entry does not decrypt (bound to its record)", async () => {
+      const row = await prisma.vaultSecret.findUniqueOrThrow({ where: { credentialId: adsId } })
+      assert.throws(() => crypto.decryptVaultSecret(row.ciphertext, row.keyId, crypto.secretAad(org.id, bankId)))
+    })
+    let otherId = ""
+    await step("key rotation re-encrypts with the new key without losing anything", async () => {
+      otherId = (await vault.createCredential(owner, input("Exchange account"), prisma)).id
+      await secrets.setVaultSecret(admin, otherId, "bank-π-пароль", prisma)
+      process.env.VAULT_ENCRYPTION_KEYS = `k2:${randomBytes(32).toString("base64")},${process.env.VAULT_ENCRYPTION_KEYS}`
+      assert.deepEqual(await secrets.rotateVaultKeys(admin, prisma), { rotated: 2, activeKeyId: "k2" })
+      process.env.VAULT_ENCRYPTION_KEYS = process.env.VAULT_ENCRYPTION_KEYS.split(",")[0]
+      assert.equal(await secrets.revealVaultSecret(admin, otherId, { unlocked: true, purpose: "view" }, prisma), "bank-π-пароль")
+      assert.equal(await secrets.revealVaultSecret(admin, adsId, { unlocked: true, purpose: "view" }, prisma), PASSWORD)
+    })
+    await step("deleting a stored password is audited; database roles have no access to the table", async () => {
+      await secrets.deleteVaultSecret(admin, otherId, prisma)
+      assert.equal(await prisma.vaultSecret.count({ where: { credentialId: otherId } }), 0)
+      assert.equal(await prisma.auditLog.count({ where: { action: "vault.secret.delete", entityId: otherId } }), 1)
+      const [grants] = await prisma.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM information_schema.role_table_grants WHERE table_name = 'vault_secrets' AND grantee IN ('anon', 'authenticated')`)
+      assert.equal(grants.n, 0)
     })
   } finally {
     await stop()

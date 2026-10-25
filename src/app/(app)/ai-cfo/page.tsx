@@ -6,13 +6,14 @@ import { Suspense } from "react"
 import { AiChat } from "@/components/ai-cfo/chat"
 import { Insights } from "@/components/ai-cfo/insights"
 import { Onboarding } from "@/components/ai-cfo/onboarding"
+import { PlansPanel } from "@/components/ai-cfo/plans"
 import { TargetsPanel } from "@/components/ai-cfo/targets"
 import { PeriodPicker } from "@/components/reports/period-picker"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { aiConfigured, aiLimits } from "@/lib/ai/config"
 import { listConversations, monthlyUsage } from "@/lib/ai/conversations"
 import { booksStatus } from "@/lib/ai/onboarding"
-import { requirePageAccess } from "@/lib/auth/session"
+import { can, requirePageAccess } from "@/lib/auth/session"
 import { prisma } from "@/lib/db"
 import { aiTexts } from "@/lib/i18n/ai-cfo"
 import { getDictionary } from "@/lib/i18n/server"
@@ -32,7 +33,8 @@ async function AiCfo({ searchParams }: { searchParams: PageProps<"/ai-cfo">["sea
   const user = await requirePageAccess("reports:read")
   const { locale } = await getDictionary()
   const t = aiTexts[locale]
-  const { period } = reportParams(await searchParams)
+  const { period, range } = reportParams(await searchParams)
+  const planMonth = range.kind === "month" ? { year: range.year, month: range.index } : { year: new Date().getUTCFullYear(), month: new Date().getUTCMonth() + 1 }
   // Only presence is checked; the key itself is never read into the page.
   const configured = aiConfigured()
   const limits = aiLimits()
@@ -77,6 +79,9 @@ async function AiCfo({ searchParams }: { searchParams: PageProps<"/ai-cfo">["sea
           </Suspense>
           <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl border border-border bg-card/30" />}>
             <TargetsPanel user={user} locale={locale} configured={configured} />
+          </Suspense>
+          <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl border border-border bg-card/30" />}>
+            <PlansPanel user={user} locale={locale} month={planMonth} canEdit={can(user, "ledger:manage")} />
           </Suspense>
         </>
       )}

@@ -15,6 +15,7 @@ import { transactionTexts, type TransactionTexts } from "@/lib/i18n/transactions
 import { toCsv, writeXlsx } from "@/lib/xlsx"
 
 import { MovementDialog } from "@/components/finance/movement-dialog"
+import { PeriodPicker } from "@/components/reports/period-picker"
 import type { listSalaryPayments } from "@/lib/data/cash-register"
 import { KIND_LABELS } from "@/lib/transactions/kinds"
 
@@ -32,6 +33,8 @@ type Props = {
   balances: { id: string; name: string; currency: string; balance: string }[]
   filters: Record<"from" | "to" | "type" | "status" | "account" | "dept" | "category" | "q", string>
   perms: { create: boolean; post: boolean; paySalary: boolean }
+  /** Month chosen in the period picker ("" = no month: all dates or the from/to filter). */
+  month: string
   salaryPayments: Awaited<ReturnType<typeof listSalaryPayments>>
 }
 
@@ -132,6 +135,10 @@ export function TransactionsWorkspace(props: Props) {
       {panel === "import" && <ImportWizard locale={locale} options={options} onClose={() => setPanel("none")} onImported={refresh} />}
       {panel === "reconcile" && <Reconcile t={t} locale={locale} baseCurrency={props.baseCurrency} balances={props.balances} />}
 
+      <div className="flex flex-wrap items-center gap-3">
+        <PeriodPicker value={props.month || new Date().toISOString().slice(0, 7)} kinds={["month"]} />
+        {props.month && <Link href="/transactions" className="text-xs text-muted-foreground hover:text-primary">{locale === "ru" ? "Все даты" : "All dates"}</Link>}
+      </div>
       <Filters t={t} options={options} filters={props.filters} />
 
       {perms.post && drafts.length > 0 && (

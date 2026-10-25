@@ -5,7 +5,10 @@ import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
 import { cn } from "cn"
 
+import Link from "next/link"
+
 import { MovementDialog, type MovementOptions } from "@/components/finance/movement-dialog"
+import { PeriodPicker } from "@/components/reports/period-picker"
 import { Button } from "@/components/ui/button"
 import type { ownerMovements } from "@/lib/data/cash-register"
 import { formatAmount, formatDate, type Locale } from "@/lib/i18n/format"
@@ -48,7 +51,7 @@ const T = {
   },
 }
 
-export function OwnerMovements(props: { locale: Locale; currency: string; rows: Row[]; options: MovementOptions; canCreate: boolean }) {
+export function OwnerMovements(props: { locale: Locale; currency: string; rows: Row[]; month: string; options: MovementOptions; canCreate: boolean }) {
   const t = T[props.locale]
   const labels = KIND_LABELS[props.locale]
   const router = useRouter()
@@ -68,6 +71,10 @@ export function OwnerMovements(props: { locale: Locale; currency: string; rows: 
         {props.canCreate && props.options.accounts.length > 0 && (
           <Button size="sm" onClick={() => setOpen(true)}><Plus /> {t.add}</Button>
         )}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <PeriodPicker value={props.month || new Date().toISOString().slice(0, 7)} kinds={["month"]} />
+        {props.month && <Link href="/owners" className="text-xs text-muted-foreground hover:text-primary">{props.locale === "ru" ? "Вся история" : "All history"}</Link>}
       </div>
       {message && <p role="status" className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-sm">{message}</p>}
       <div className="grid gap-2 sm:grid-cols-2">

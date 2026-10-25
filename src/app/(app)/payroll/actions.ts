@@ -33,6 +33,7 @@ import {
   listArchivedEmployees,
   listSheetDepartments,
   mergeDepartments,
+  moveDepartment,
   renameDepartment,
   setDepartmentColor,
   setSheetDepartmentArchived,
@@ -588,6 +589,16 @@ export async function setEmployeeTeamAction(monthKey: string, employeeId: string
     const user = await sessionUser()
     await setEmployeeTeam(user, month(monthKey), employeeId, teamId || null)
     return ledgerDone()
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+export async function moveDepartmentAction(id: string, direction: "up" | "down"): Promise<CellResult> {
+  try {
+    await moveDepartment(await authorize("structure:manage"), id, direction === "up" ? "up" : "down")
+    revalidatePath("/structure")
+    return done()
   } catch (error) {
     return failRu(error)
   }

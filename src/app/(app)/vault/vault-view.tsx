@@ -23,6 +23,7 @@ import {
   unshareAction,
   type CredentialForm,
 } from "./actions"
+import { StoredPassword } from "./stored-password"
 
 type Row = Awaited<ReturnType<typeof listCredentials>>[number]
 
@@ -159,6 +160,7 @@ export function VaultView(props: {
   candidates: { id: string; label: string }[]
   filters: Record<"q" | "dept" | "cat" | "level" | "archived", string>
   perms: { manage: boolean; audit: boolean }
+  secrets: { configured: boolean; superAdmin: boolean; ids: string[] }
 }) {
   const { locale, rows, perms } = props
   const t = T[locale]
@@ -257,7 +259,7 @@ export function VaultView(props: {
         </div>
         <aside className="flex flex-col gap-4">
           {selected ? (
-            <Detail key={selected.id} row={selected} t={t} locale={locale} perms={perms} candidates={props.candidates} onClose={() => setSelected(null)} onEdit={() => setEditing({ id: selected.id, form: fromRow(selected) })} run={run} />
+            <Detail key={selected.id} row={selected} t={t} locale={locale} perms={perms} candidates={props.candidates} onClose={() => setSelected(null)} onEdit={() => setEditing({ id: selected.id, form: fromRow(selected) })} run={run} secrets={props.secrets} onChanged={refresh} />
           ) : (
             <Generator t={t} />
           )}
@@ -297,6 +299,8 @@ function Detail(props: {
   onClose: () => void
   onEdit: () => void
   run: (fn: () => Promise<{ ok: boolean; message?: string }>, success?: string) => Promise<boolean>
+  secrets: { configured: boolean; superAdmin: boolean; ids: string[] }
+  onChanged: () => void
 }) {
   const { row: r, t, perms } = props
   const [panel, setPanel] = useState<"none" | "share" | "history">("none")
@@ -333,6 +337,7 @@ function Detail(props: {
         ) : "—")}
         {field(t.field.password, (
           <span className="flex flex-col gap-1.5">
+            <StoredPassword locale={props.locale} credentialId={r.id} configured={props.secrets.configured} superAdmin={props.secrets.superAdmin} hasSecret={props.secrets.ids.includes(r.id)} archived={r.archived} onChanged={props.onChanged} />
             <span className="flex items-center gap-2 text-muted-foreground"><Lock className="size-3.5" /> {t.passwordStored}{r.vaultProvider ? ` · ${t.provider[r.vaultProvider]}` : ""}</span>
             {vaultUrl ? <a href={vaultUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline"><Vault className="size-3.5" /> {t.openInVault}</a> : <span className="text-xs text-muted-foreground">{r.vaultItemRef ?? t.noVaultRef}</span>}
           </span>

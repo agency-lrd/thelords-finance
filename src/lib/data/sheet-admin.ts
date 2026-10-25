@@ -109,7 +109,7 @@ export async function listSheetDepartments(user: SessionUser, m: Month, db: Db =
   const start = monthStart(m)
   const rows = await db.department.findMany({
     where: { organizationId: user.organizationId },
-    orderBy: { name: "asc" },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     select: {
       id: true,
       name: true,
@@ -147,7 +147,9 @@ export async function createSheetDepartment(user: SessionUser, input: { name: st
   return inTx(db, async (tx) => {
     await assertUniqueName(tx, user, name, null)
     const code = await uniqueCode(name, async (c) => Boolean(await tx.department.findUnique({ where: { organizationId_code: { organizationId: user.organizationId, code: c } } })))
-    const department = await tx.department.create({ data: { organizationId: user.organizationId, code, name, color, costClassification: input.costClassification } })
+    // New departments go to the end of the explicit order.
+    const last = await tx.department.aggregate({ where: { organizationId: user.organizationId }, _max: { sortOrder: true } })
+    const department = await tx.department.create({ data: { organizationId: user.organizationId, code, name, color, costClassification: input.costClassification, sortOrder: (last._max.sortOrder ?? 0) + 10 } })
     await audit(tx, user, "department.create", "department", department.id, { name, color, via: "sheet" })
     return department
   })
@@ -248,5 +250,20 @@ export async function mergeDepartments(user: SessionUser, sourceId: string, targ
     await tx.department.update({ where: { id: sourceId }, data: { archivedAt: new Date() } })
     await audit(tx, user, "department.merge", "department", sourceId, { into: targetId, from: `${m.year}-${String(m.month).padStart(2, "0")}`, assignmentsMoved: moved })
     return { moved }
+  })
+}
+
+/** Moves a department one place up or down (explicit order used by the sheet and the structure screen). */
+export async function moveDepartment(user: SessionUser, departmentId: string, direction: "up" | "down", db: Db = prisma) {
+  if (!user.permissions.has("structure:manage")) throw new UserInputError("You do not have permission to manage departments.")
+  return inTx(db, async (tx) => {
+    const list = await tx.department.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true } })
+    const i = list.findIndex((d) => d.id === departmentId)
+    const j = direction === "up" ? i - 1 : i + 1
+    if (i < 0 || j < 0 || j >= list.length) return
+    const order = list.map((d) => d.id)
+    ;[order[i], order[j]] = [order[j], order[i]]
+    for (const [index, id] of order.entries()) await tx.department.update({ where: { id }, data: { sortOrder: (index + 1) * 10 } })
+    await audit(tx, user, "department.move", "department", departmentId, { direction })
   })
 }

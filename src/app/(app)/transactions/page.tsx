@@ -30,9 +30,13 @@ async function Transactions({ searchParams }: { searchParams: PageProps<"/transa
   const s = (k: string) => (typeof p[k] === "string" ? (p[k] as string) : "")
   const d = (k: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s(k)) ? new Date(`${s(k)}T00:00:00Z`) : null)
   const id = (k: string) => (UUID.test(s(k)) ? s(k) : null)
+  // A month from the period picker (?p=2026-10) sets the date range unless from/to are given.
+  const month = /^\d{4}-\d{2}$/.test(s("p")) ? s("p") : ""
+  const monthFrom = month ? new Date(`${month}-01T00:00:00Z`) : null
+  const monthTo = monthFrom ? new Date(Date.UTC(monthFrom.getUTCFullYear(), monthFrom.getUTCMonth() + 1, 0)) : null
   const filters = {
-    from: d("from"),
-    to: d("to"),
+    from: d("from") ?? monthFrom,
+    to: d("to") ?? monthTo,
     type: TRANSACTION_TYPES.includes(s("type") as TransactionType) ? (s("type") as TransactionType) : null,
     status: (["DRAFT", "POSTED", "REVERSED"] as const).find((x) => x === s("status")) ?? null,
     financialAccountId: id("account"),
@@ -54,6 +58,7 @@ async function Transactions({ searchParams }: { searchParams: PageProps<"/transa
       rows={rows}
       options={options}
       balances={balances.filter((a) => !a.closed).map((a) => ({ id: a.id, name: a.name, currency: a.currency, balance: a.balance }))}
+      month={month}
       filters={{ from: s("from"), to: s("to"), type: s("type"), status: s("status"), account: s("account"), dept: s("dept"), category: s("category"), q: s("q") }}
       perms={{ create: can(user, "journal:create"), post: can(user, "journal:post"), paySalary: can(user, "payroll:pay") }}
       salaryPayments={salaryPayments}
