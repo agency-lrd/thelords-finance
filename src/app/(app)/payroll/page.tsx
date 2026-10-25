@@ -50,13 +50,6 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
       payrollByDepartment[r.departmentId] = value.toString()
     }
   }
-  const payrollByTeam: Record<string, string> = {}
-  if (showSalary) {
-    for (const r of sheet.rows) {
-      if (!r.teamId || r.currency !== user.baseCurrency) continue
-      payrollByTeam[r.teamId] = new Decimal(payrollByTeam[r.teamId] ?? 0).add(r.confirmed && r.approved ? r.approved : r.payable).toString()
-    }
-  }
   const openAccounts = accounts.filter((a) => !a.closed && a.type !== "LOAN").map((a) => ({ id: a.id, name: a.name, currency: a.currency }))
 
   return (
@@ -101,8 +94,6 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
         accounts={openAccounts}
         canManage={can(user, "project_finance:manage")}
         open={sheet.periodStatus !== "CLOSED" && sheet.periodStatus !== "LOCKED"}
-        payrollByTeam={payrollByTeam}
-        employees={sheet.rows.map((r) => ({ employeeId: r.employeeId, name: r.name, departmentId: r.departmentId, teamId: r.teamId }))}
       />
     )}
     </>

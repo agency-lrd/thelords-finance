@@ -15,7 +15,7 @@ import { formatAmount, normalizeNumber, type Locale } from "@/lib/i18n/format"
 
 import { addLedgerAction, confirmLedgerAction, deleteLedgerAction, settleLedgerAction, updateLedgerAction, type LedgerFormInput } from "./actions"
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
-import { TeamsPanel } from "./teams-panel"
+import { CarryCostsButton } from "./recurring-costs"
 
 type Ledger = Awaited<ReturnType<typeof getProjectLedger>>
 type Row = Ledger["income"][number] | Ledger["costs"][number]
@@ -30,9 +30,6 @@ type Props = {
   accounts: { id: string; name: string; currency: string }[]
   canManage: boolean
   open: boolean
-  /** Payroll of employees assigned to each team (part of department payroll; analysis only). */
-  payrollByTeam: Record<string, string>
-  employees: { employeeId: string; name: string; departmentId: string | null; teamId: string | null }[]
 }
 
 const CURRENCIES = ["USD", "USDT", "EUR", "GBP"] as const
@@ -88,6 +85,7 @@ export function ProjectLedger(props: Props) {
           money={money}
           monthKey={props.monthKey}
           editable={editable}
+          extra={kind === "cost" && editable ? <CarryCostsButton locale={locale} monthKey={props.monthKey} ledger={ledger} onDone={() => { setError(null); refresh() }} onError={setError} /> : null}
           onError={setError}
           onEdit={setEditing}
           onDone={() => {
@@ -97,21 +95,6 @@ export function ProjectLedger(props: Props) {
         />
       ))}
 
-      <TeamsPanel
-        locale={locale}
-        monthKey={props.monthKey}
-        baseCurrency={baseCurrency}
-        ledger={ledger}
-        payrollByTeam={props.payrollByTeam}
-        employees={props.employees}
-        canManage={props.canManage}
-        editable={props.open}
-        onError={setError}
-        onDone={() => {
-          setError(null)
-          refresh()
-        }}
-      />
 
       {/* Department contribution ("Net profit company" in the original sheet, correctly named) */}
       <section className="flex flex-col gap-4">
@@ -215,6 +198,8 @@ function Block(props: {
   money: (v: Decimal | string) => string
   monthKey: string
   editable: boolean
+  /** Controls shown under the block title (the costs block: carry recurring costs). */
+  extra?: React.ReactNode
   onError: (message: string | null) => void
   onEdit: (row: Row) => void
   onDone: () => void
@@ -233,6 +218,7 @@ function Block(props: {
         <div>
           <h2 className="font-display text-2xl font-black uppercase italic">{kind === "income" ? t.ledger.incomeTitle : t.ledger.costsTitle}</h2>
           <p className="mt-1 text-xs text-muted-foreground">{kind === "income" ? t.ledger.incomeHint : t.ledger.costsHint}</p>
+          {props.extra && <div className="mt-2">{props.extra}</div>}
         </div>
         <div className="text-right">
           <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{kind === "income" ? t.ledger.totalIncome : t.ledger.totalCost}</p>
