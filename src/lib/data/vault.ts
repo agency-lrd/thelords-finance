@@ -92,11 +92,15 @@ export type CredentialInput = {
   username: string | null
   departmentId: string | null
   categoryId: string | null
-  responsibleEmployeeId: string | null
   accessLevel: VaultAccessLevel
-  vaultProvider: VaultProvider | null
-  vaultItemRef: string | null
   notes: string | null
+  /**
+   * Legacy fields (responsible employee, external password manager). No longer in the form: when not
+   * given, the stored values are kept unchanged, never wiped.
+   */
+  responsibleEmployeeId?: string | null
+  vaultProvider?: VaultProvider | null
+  vaultItemRef?: string | null
 }
 
 async function validate(db: Db, user: SessionUser, input: CredentialInput) {
@@ -108,7 +112,7 @@ async function validate(db: Db, user: SessionUser, input: CredentialInput) {
   if (input.vaultItemRef && input.vaultItemRef.length > 500) throw new UserInputError("Reference is too long.")
   for (const [field, value] of [["Notes", input.notes], ["Username", input.username], ["Login URL", input.loginUrl], ["Reference", input.vaultItemRef], ["Name", input.name]] as const) {
     const reason = secretReason(value)
-    if (reason) throw new UserInputError(`${field} looks like it contains a secret (${reason}). Secrets are kept only in the password manager.`)
+    if (reason) throw new UserInputError(`${field} looks like it contains a secret (${reason}). Enter the password in the Password field: it is stored encrypted.`)
   }
   if (!ACCESS_LEVELS.includes(input.accessLevel)) throw new UserInputError("Choose an access level.")
   const org = user.organizationId
@@ -124,11 +128,11 @@ const data = (input: CredentialInput, name: string) => ({
   username: input.username?.trim() || null,
   departmentId: input.departmentId,
   categoryId: input.categoryId,
-  responsibleEmployeeId: input.responsibleEmployeeId,
   accessLevel: input.accessLevel,
-  vaultProvider: input.vaultProvider,
-  vaultItemRef: input.vaultItemRef?.trim() || null,
   notes: input.notes?.trim() || null,
+  ...(input.responsibleEmployeeId !== undefined ? { responsibleEmployeeId: input.responsibleEmployeeId } : {}),
+  ...(input.vaultProvider !== undefined ? { vaultProvider: input.vaultProvider } : {}),
+  ...(input.vaultItemRef !== undefined ? { vaultItemRef: input.vaultItemRef?.trim() || null } : {}),
 })
 
 export async function createCredential(user: SessionUser, input: CredentialInput, db: Db = prisma) {

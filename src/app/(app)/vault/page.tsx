@@ -37,11 +37,10 @@ async function Vault({ searchParams }: { searchParams: PageProps<"/vault">["sear
     archived: s("archived") === "1",
   }
   const manage = can(user, "vault:manage")
-  const [rows, categories, departments, employees, candidates, secrets] = await Promise.all([
+  const [rows, categories, departments, candidates, secrets] = await Promise.all([
     listCredentials(user, filters),
     listVaultCategories(user),
     prisma.department.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
-    prisma.employee.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: { firstName: "asc" }, select: { id: true, firstName: true, lastName: true } }),
     shareCandidates(user),
     credentialsWithSecret(user),
   ])
@@ -51,7 +50,6 @@ async function Vault({ searchParams }: { searchParams: PageProps<"/vault">["sear
       rows={rows}
       categories={categories}
       departments={departments}
-      employees={employees.map((e) => ({ id: e.id, name: `${e.firstName} ${e.lastName}`.trim() }))}
       candidates={candidates}
       filters={{ q: s("q"), dept: s("dept"), cat: s("cat"), level: s("level"), archived: s("archived") }}
       perms={{ manage, audit: can(user, "vault:audit") }}

@@ -8,19 +8,16 @@ import { getSession } from "@/lib/auth/session"
 import { AuthorizationError } from "@/lib/authz/server"
 import {
   ACCESS_LEVELS,
-  createCredential,
   createVaultCategory,
   credentialHistory,
   listShares,
-  PROVIDERS,
   recordAccess,
   setArchived,
   shareCredential,
   unshareCredential,
-  updateCredential,
   type CredentialInput,
 } from "@/lib/data/vault"
-import { deleteVaultSecret, revealVaultSecret, rotateVaultKeys, setVaultSecret } from "@/lib/data/vault-secrets"
+import { deleteVaultSecret, revealVaultSecret, rotateVaultKeys, saveCredentialWithPassword, setVaultSecret } from "@/lib/data/vault-secrets"
 import { prisma } from "@/lib/data/db"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { getSupabaseEnv } from "@/lib/supabase/env"
@@ -40,7 +37,7 @@ const done = () => {
   return { ok: true as const }
 }
 
-export type CredentialForm = Record<keyof CredentialInput, string>
+export type CredentialForm = { name: string; loginUrl: string; username: string; departmentId: string; categoryId: string; accessLevel: string; notes: string }
 
 function parse(form: CredentialForm): CredentialInput {
   const id = (v: string) => (UUID.test(v) ? v : null)
@@ -51,19 +48,18 @@ function parse(form: CredentialForm): CredentialInput {
     username: form.username?.trim() || null,
     departmentId: id(form.departmentId),
     categoryId: id(form.categoryId),
-    responsibleEmployeeId: id(form.responsibleEmployeeId),
     accessLevel: form.accessLevel as CredentialInput["accessLevel"],
-    vaultProvider: PROVIDERS.includes(form.vaultProvider as (typeof PROVIDERS)[number]) ? (form.vaultProvider as CredentialInput["vaultProvider"]) : null,
-    vaultItemRef: form.vaultItemRef?.trim() || null,
     notes: form.notes?.trim() || null,
   }
 }
 
-export async function saveCredentialAction(id: string | null, form: CredentialForm): Promise<Ok> {
+/** Saves an entry; a non-empty `password` is encrypted server-side in the same transaction (never logged). */
+export async function saveCredentialAction(id: string | null, form: CredentialForm, password?: string | null): Promise<Ok> {
   try {
     const u = await user()
-    if (id) await updateCredential(u, id, parse(form))
-    else await createCredential(u, parse(form))
+    if (id !== null && !UUID.test(id)) throw new UserInputError("Entry not found.")
+    if (password !== undefined && password !== null && (typeof password !== "string" || password.length > 4000)) throw new UserInputError("The password is too long.")
+    await saveCredentialWithPassword(u, id, parse(form), password || null)
     return done()
   } catch (e) {
     return fail(e)

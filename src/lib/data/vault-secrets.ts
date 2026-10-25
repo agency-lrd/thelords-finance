@@ -6,6 +6,7 @@ import { activeKeyId, decryptVaultSecret, encryptVaultSecret, secretAad, vaultCo
 
 import { audit } from "./common"
 import { inTx, prisma, type Db } from "./db"
+import { createCredential, updateCredential, type CredentialInput } from "./vault"
 
 /*
  * Stored passwords of the credential register. Only the Super Admin may set, view, copy, delete or
@@ -95,4 +96,17 @@ export async function rotateVaultKeys(user: SessionUser, db: Db = prisma) {
   }
   await inTx(db, (tx) => audit(tx, user, "vault.key.rotate", "vault", null, { rotated, activeKeyId: active }))
   return { rotated, activeKeyId: active }
+}
+
+/**
+ * Saves an entry and, when a password is given, its encrypted password in ONE transaction: either both
+ * are stored or neither. An empty password keeps the stored one. Only the Super Admin may set passwords.
+ */
+export async function saveCredentialWithPassword(user: SessionUser, id: string | null, input: CredentialInput, password: string | null, db: Db = prisma) {
+  if (password) requireSuperAdmin(user)
+  return inTx(db, async (tx) => {
+    const credentialId = id ? (await updateCredential(user, id, input, tx), id) : (await createCredential(user, input, tx)).id
+    if (password) await setVaultSecret(user, credentialId, password, tx)
+    return credentialId
+  })
 }

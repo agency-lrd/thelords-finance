@@ -163,6 +163,38 @@ async function main() {
       const [grants] = await prisma.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM information_schema.role_table_grants WHERE table_name = 'vault_secrets' AND grantee IN ('anon', 'authenticated')`)
       assert.equal(grants.n, 0)
     })
+
+    await step("new entry form: save the entry and its password in one step; encrypted, never in lists or the audit log", async () => {
+      const SYNTHETIC = "Synthetic-Only-Pass#2026"
+      const form = { name: "Test platform", loginUrl: "https://test.example.test", username: "qa@example.test", departmentId: infl.id, categoryId: category.id, accessLevel: "STANDARD" as const, notes: null }
+      // Without the Super Admin a password is refused and nothing is created.
+      const before = await prisma.vaultCredential.count()
+      await assert.rejects(() => secrets.saveCredentialWithPassword(owner, null, form, SYNTHETIC, prisma), /Super Admin/)
+      assert.equal(await prisma.vaultCredential.count(), before, "no half-saved entry")
+      const id = await secrets.saveCredentialWithPassword(admin, null, form, SYNTHETIC, prisma)
+      const row = await prisma.vaultSecret.findUniqueOrThrow({ where: { credentialId: id } })
+      assert.ok(!Buffer.from(row.ciphertext).toString("utf8").includes(SYNTHETIC))
+      assert.equal(await secrets.revealVaultSecret(admin, id, { unlocked: true, purpose: "view" }, prisma), SYNTHETIC)
+      assert.equal(await secrets.revealVaultSecret(admin, id, { unlocked: true, purpose: "copy" }, prisma), SYNTHETIC)
+      // Editing without a password keeps the stored one; with a new one replaces it.
+      await secrets.saveCredentialWithPassword(admin, id, { ...form, name: "Test platform 2" }, null, prisma)
+      assert.equal(await secrets.revealVaultSecret(admin, id, { unlocked: true, purpose: "view" }, prisma), SYNTHETIC)
+      await secrets.saveCredentialWithPassword(admin, id, form, "Synthetic-New-Pass#2027", prisma)
+      assert.equal(await secrets.revealVaultSecret(admin, id, { unlocked: true, purpose: "view" }, prisma), "Synthetic-New-Pass#2027")
+      const listed = JSON.stringify(await vault.listCredentials(admin, {}, prisma))
+      const logs = JSON.stringify(await prisma.auditLog.findMany({ where: { entityId: id } }), (_k, v) => (typeof v === "bigint" ? v.toString() : v))
+      for (const text of [listed, logs]) assert.ok(!text.includes(SYNTHETIC) && !text.includes("Synthetic-New-Pass"))
+      await secrets.deleteVaultSecret(admin, id, prisma)
+      assert.equal(await prisma.vaultSecret.count({ where: { credentialId: id } }), 0)
+    })
+    await step("removed form fields keep their stored values (responsible, password manager, item link)", async () => {
+      const legacy = await prisma.vaultCredential.findUniqueOrThrow({ where: { id: adsId } })
+      assert.equal(legacy.vaultProvider, "BITWARDEN")
+      await secrets.saveCredentialWithPassword(admin, adsId, { name: legacy.name, loginUrl: legacy.loginUrl, username: legacy.username, departmentId: legacy.departmentId, categoryId: legacy.categoryId, accessLevel: legacy.accessLevel, notes: legacy.notes }, null, prisma)
+      const after = await prisma.vaultCredential.findUniqueOrThrow({ where: { id: adsId } })
+      assert.deepEqual([after.vaultProvider, after.vaultItemRef, after.responsibleEmployeeId], [legacy.vaultProvider, legacy.vaultItemRef, legacy.responsibleEmployeeId])
+      assert.equal(await secrets.revealVaultSecret(admin, adsId, { unlocked: true, purpose: "view" }, prisma), PASSWORD, "the existing encrypted password is untouched")
+    })
   } finally {
     await stop()
   }

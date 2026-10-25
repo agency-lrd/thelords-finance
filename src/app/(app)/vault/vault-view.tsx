@@ -1,6 +1,6 @@
 "use client"
 
-import { Archive, ArchiveRestore, Copy, ExternalLink, History, KeyRound, Lock, Plus, RefreshCw, Search, ShieldAlert, Users, Vault, X } from "lucide-react"
+import { Archive, ArchiveRestore, Copy, ExternalLink, Eye, EyeOff, History, KeyRound, Lock, Plus, RefreshCw, Search, ShieldAlert, Users, Vault, X } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useState, useTransition } from "react"
@@ -30,8 +30,8 @@ type Row = Awaited<ReturnType<typeof listCredentials>>[number]
 const T = {
   ru: {
     title: "Пароли",
-    description: "Реестр доступов компании: сервис, логин, ответственный, кому открыт доступ. Сами пароли хранятся только в менеджере паролей (Bitwarden или 1Password) — здесь их нет.",
-    notice: "Пароли, резервные коды, API-ключи и сид-фразы в это поле не сохраняются: система отклонит такие данные. Сид-фразы и приватные ключи кошельков нельзя хранить ни здесь, ни в общем менеджере паролей.",
+    description: "Доступы компании: сервис, логин и пароль. Пароли хранятся в CRM в зашифрованном виде (AES-256-GCM); показать или скопировать их может только Super Admin после повторного ввода своего пароля.",
+    notice: "Пароль вводится только в поле «Пароль» — он шифруется. В заметки, логин и URL секреты не сохраняются: система отклонит такие данные. Сид-фразы и приватные ключи кошельков здесь не храните.",
     add: "Новая запись",
     search: "Сервис, URL, логин…",
     all: "Все",
@@ -42,7 +42,15 @@ const T = {
     emptyShared: "С вами пока не поделились ни одной записью.",
     col: { name: "Сервис", username: "Логин", category: "Категория", level: "Уровень", responsible: "Ответственный", updated: "Обновлено", shared: "Доступ" },
     level: { STANDARD: "Обычный", SENSITIVE: "Чувствительный", CRITICAL: "Критичный" },
-    levelHint: "Критичный: финансовые платформы, резервные коды, API-ключи — только в менеджере паролей, с 2FA.",
+    levelHint: "Критичный: финансовые платформы, банковские и биржевые кабинеты — обязательно с 2FA.",
+    passwordHint: "Шифруется на сервере перед сохранением. Оставьте пустым, чтобы не менять сохранённый пароль.",
+    passwordSaved: "Пароль уже сохранён",
+    show: "Показать",
+    hide: "Скрыть",
+    generateShort: "Сгенерировать",
+    copy: "Копировать",
+    passwordOnlySuper: "Пароль может сохранить только Super Admin.",
+    passwordNotConfigured: "Хранение паролей не настроено на сервере.",
     provider: { BITWARDEN: "Bitwarden", ONEPASSWORD: "1Password", OTHER: "Другой" },
     field: {
       name: "Сервис / платформа",
@@ -59,7 +67,7 @@ const T = {
       created: "Создано",
       updated: "Обновлено",
     },
-    passwordStored: "Хранится в менеджере паролей",
+    passwordStored: "Внешний менеджер паролей (старая запись)",
     openInVault: "Открыть запись",
     noVaultRef: "Ссылка на запись не указана",
     copyUsername: "Копировать логин",
@@ -100,7 +108,15 @@ const T = {
     emptyShared: "Nothing has been shared with you yet.",
     col: { name: "Service", username: "Login", category: "Category", level: "Level", responsible: "Responsible", updated: "Updated", shared: "Access" },
     level: { STANDARD: "Standard", SENSITIVE: "Sensitive", CRITICAL: "Critical" },
-    levelHint: "Critical: financial platforms, recovery codes, API keys — only in the password manager, with 2FA.",
+    levelHint: "Critical: financial platforms, bank and exchange accounts: always with 2FA.",
+    passwordHint: "Encrypted on the server before saving. Leave empty to keep the saved password.",
+    passwordSaved: "A password is already saved",
+    show: "Show",
+    hide: "Hide",
+    generateShort: "Generate",
+    copy: "Copy",
+    passwordOnlySuper: "Only the Super Admin can store passwords.",
+    passwordNotConfigured: "Password storage is not configured on the server.",
     provider: { BITWARDEN: "Bitwarden", ONEPASSWORD: "1Password", OTHER: "Other" },
     field: {
       name: "Service / platform",
@@ -117,7 +133,7 @@ const T = {
       created: "Created",
       updated: "Updated",
     },
-    passwordStored: "Stored in the password manager",
+    passwordStored: "External password manager (legacy entry)",
     openInVault: "Open item",
     noVaultRef: "No item link set",
     copyUsername: "Copy username",
@@ -146,8 +162,8 @@ const T = {
   },
 }
 
-const emptyForm = (): CredentialForm => ({ name: "", loginUrl: "", username: "", departmentId: "", categoryId: "", responsibleEmployeeId: "", accessLevel: "STANDARD", vaultProvider: "BITWARDEN", vaultItemRef: "", notes: "" })
-const fromRow = (r: Row): CredentialForm => ({ name: r.name, loginUrl: r.loginUrl ?? "", username: r.username ?? "", departmentId: r.departmentId ?? "", categoryId: r.categoryId ?? "", responsibleEmployeeId: r.responsibleEmployeeId ?? "", accessLevel: r.accessLevel, vaultProvider: r.vaultProvider ?? "", vaultItemRef: r.vaultItemRef ?? "", notes: r.notes ?? "" })
+const emptyForm = (): CredentialForm => ({ name: "", loginUrl: "", username: "", departmentId: "", categoryId: "", accessLevel: "STANDARD", notes: "" })
+const fromRow = (r: Row): CredentialForm => ({ name: r.name, loginUrl: r.loginUrl ?? "", username: r.username ?? "", departmentId: r.departmentId ?? "", categoryId: r.categoryId ?? "", accessLevel: r.accessLevel, notes: r.notes ?? "" })
 
 const LEVEL_TONE = { STANDARD: "border-border text-muted-foreground", SENSITIVE: "border-amber-400/50 text-amber-300", CRITICAL: "border-red-400/60 text-red-300" }
 
@@ -156,7 +172,6 @@ export function VaultView(props: {
   rows: Row[]
   categories: { id: string; name: string }[]
   departments: { id: string; name: string }[]
-  employees: { id: string; name: string }[]
   candidates: { id: string; label: string }[]
   filters: Record<"q" | "dept" | "cat" | "level" | "archived", string>
   perms: { manage: boolean; audit: boolean }
@@ -274,10 +289,10 @@ export function VaultView(props: {
           isNew={!editing.id}
           categories={props.categories}
           departments={props.departments}
-          employees={props.employees}
+          password={{ allowed: props.secrets.superAdmin && props.secrets.configured, configured: props.secrets.configured, saved: !!editing.id && props.secrets.ids.includes(editing.id) }}
           onClose={() => setEditing(null)}
-          onSave={async (form) => {
-            if (await run(() => saveCredentialAction(editing.id, form))) {
+          onSave={async (form, password) => {
+            if (await run(() => saveCredentialAction(editing.id, form, password || null))) {
               setEditing(null)
               setSelected(null)
             }
@@ -338,13 +353,18 @@ function Detail(props: {
         {field(t.field.password, (
           <span className="flex flex-col gap-1.5">
             <StoredPassword locale={props.locale} credentialId={r.id} configured={props.secrets.configured} superAdmin={props.secrets.superAdmin} hasSecret={props.secrets.ids.includes(r.id)} archived={r.archived} onChanged={props.onChanged} />
-            <span className="flex items-center gap-2 text-muted-foreground"><Lock className="size-3.5" /> {t.passwordStored}{r.vaultProvider ? ` · ${t.provider[r.vaultProvider]}` : ""}</span>
-            {vaultUrl ? <a href={vaultUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline"><Vault className="size-3.5" /> {t.openInVault}</a> : <span className="text-xs text-muted-foreground">{r.vaultItemRef ?? t.noVaultRef}</span>}
+            {/* Older entries may still point to an external password manager: shown, never deleted. */}
+            {(r.vaultItemRef || vaultUrl) && (
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Lock className="size-3.5" /> {t.passwordStored}{r.vaultProvider ? ` · ${t.provider[r.vaultProvider]}` : ""}
+                {vaultUrl ? <a href={vaultUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline"><Vault className="size-3.5" /> {t.openInVault}</a> : <span>{r.vaultItemRef}</span>}
+              </span>
+            )}
           </span>
         ))}
         {field(t.field.category, r.category ?? "—")}
         {field(t.field.department, r.department ?? "—")}
-        {field(t.field.responsible, r.responsible ?? "—")}
+        {r.responsible && field(t.field.responsible, r.responsible)}
         {r.notes && field(t.field.notes, <span className="whitespace-pre-wrap text-foreground/85">{r.notes}</span>)}
         {field(`${t.field.created} / ${t.field.updated}`, `${formatDate(r.createdAt.slice(0, 10), props.locale)} / ${formatDate(r.updatedAt.slice(0, 10), props.locale)}`)}
       </div>
@@ -451,15 +471,18 @@ function EditDialog(props: {
   isNew: boolean
   categories: { id: string; name: string }[]
   departments: { id: string; name: string }[]
-  employees: { id: string; name: string }[]
+  password: { allowed: boolean; configured: boolean; saved: boolean }
   onClose: () => void
-  onSave: (form: CredentialForm) => Promise<void>
+  onSave: (form: CredentialForm, password: string) => Promise<void>
 }) {
   const { t } = props
   const [form, setForm] = useState(props.form)
+  const [password, setPassword] = useState("")
+  const [visible, setVisible] = useState(false)
+  const [copiedPassword, setCopiedPassword] = useState(false)
   const [saving, setSaving] = useState(false)
   const set = (k: keyof CredentialForm) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }))
-  const warnings = (["notes", "username", "loginUrl", "vaultItemRef"] as const).map((k) => [k, secretReason(form[k])] as const).filter(([, r]) => r)
+  const warnings = (["notes", "username", "loginUrl"] as const).map((k) => [k, secretReason(form[k])] as const).filter(([, r]) => r)
   const label = (text: string, node: React.ReactNode, span = false) => <label className={cn("flex flex-col gap-1.5 text-xs font-medium text-muted-foreground", span && "sm:col-span-2")}>{text}{node}</label>
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onMouseDown={props.onClose}>
@@ -472,24 +495,47 @@ function EditDialog(props: {
           onSubmit={async (e) => {
             e.preventDefault()
             setSaving(true)
-            await props.onSave(form)
+            await props.onSave(form, password)
             setSaving(false)
           }}
         >
           {label(t.field.name, <Input value={form.name} onChange={set("name")} required maxLength={160} autoFocus />)}
           {label(t.field.loginUrl, <Input value={form.loginUrl} onChange={set("loginUrl")} type="url" placeholder="https://" />)}
           {label(t.field.username, <Input value={form.username} onChange={set("username")} maxLength={200} autoComplete="off" />)}
+          {label(
+            t.field.password,
+            props.password.allowed ? (
+              <span className="flex flex-col gap-1">
+                <span className="flex items-center gap-1.5">
+                  <Input
+                    type={visible ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => { setPassword(e.target.value); setCopiedPassword(false) }}
+                    maxLength={4000}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder={props.password.saved ? `•••••••• ${t.passwordSaved}` : ""}
+                    className="min-w-0 flex-1 font-mono"
+                    aria-label={t.field.password}
+                  />
+                  <button type="button" onClick={() => setVisible((v) => !v)} title={visible ? t.hide : t.show} aria-label={visible ? t.hide : t.show} className="rounded p-1.5 text-muted-foreground hover:text-primary">{visible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button>
+                  <button type="button" onClick={() => { setPassword(generatePassword(24)); setVisible(true); setCopiedPassword(false) }} title={t.generateShort} aria-label={t.generateShort} className="rounded p-1.5 text-muted-foreground hover:text-primary"><RefreshCw className="size-4" /></button>
+                  <button type="button" disabled={!password} onClick={async () => { await navigator.clipboard.writeText(password); setCopiedPassword(true) }} title={t.copy} aria-label={t.copy} className="rounded p-1.5 text-muted-foreground hover:text-primary disabled:opacity-30"><Copy className="size-4" /></button>
+                </span>
+                <span className="text-[10px] font-normal text-muted-foreground">{copiedPassword ? t.copied : t.passwordHint}</span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-2 text-xs font-normal text-muted-foreground"><Lock className="size-3.5" /> {props.password.configured ? t.passwordOnlySuper : t.passwordNotConfigured}</span>
+            ),
+          )}
           {label(t.field.category, <Select value={form.categoryId} onChange={set("categoryId")}><option value="">—</option>{props.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>)}
           {label(t.field.department, <Select value={form.departmentId} onChange={set("departmentId")}><option value="">—</option>{props.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>)}
-          {label(t.field.responsible, <Select value={form.responsibleEmployeeId} onChange={set("responsibleEmployeeId")}><option value="">—</option>{props.employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select>)}
           {label(t.field.accessLevel, <Select value={form.accessLevel} onChange={set("accessLevel")}>{(["STANDARD", "SENSITIVE", "CRITICAL"] as const).map((l) => <option key={l} value={l}>{t.level[l]}</option>)}</Select>)}
-          {label(t.field.provider, <Select value={form.vaultProvider} onChange={set("vaultProvider")}><option value="">—</option>{(["BITWARDEN", "ONEPASSWORD", "OTHER"] as const).map((p) => <option key={p} value={p}>{t.provider[p]}</option>)}</Select>)}
-          {label(t.field.itemRef, <Input value={form.vaultItemRef} onChange={set("vaultItemRef")} maxLength={500} placeholder="https://vault.bitwarden.com/#/vault?itemId=…" />, true)}
           {label(t.field.notes, <Textarea value={form.notes} onChange={set("notes")} maxLength={2000} />, true)}
           <p className="text-[11px] text-muted-foreground sm:col-span-2">{t.levelHint}</p>
           {warnings.length > 0 && (
             <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200 sm:col-span-2">
-              {t.secretWarning}: {warnings.map(([k, r]) => `${t.field[k === "vaultItemRef" ? "itemRef" : k]} (${r})`).join(", ")}
+              {t.secretWarning}: {warnings.map(([k, r]) => `${t.field[k]} (${r})`).join(", ")}
             </p>
           )}
           <div className="flex justify-end gap-2 sm:col-span-2">
