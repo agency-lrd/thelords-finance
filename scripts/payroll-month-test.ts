@@ -85,7 +85,9 @@ async function main() {
       assert.ok(members.every((m) => m.snapshot !== null && m.snapshotAt))
       assert.ok((await rows(jan)).every((r) => r.paid === "0" && r.outstanding === r.approved))
       const pnl = (await reports.pnlReport(admin, range("month", 2026, 1), {}, prisma)).current
-      assert.equal(Number(pnl.costOfServices) + Number(pnl.operatingExpenses), 4600)
+      // Prorated from the start date (30-day convention): Alexander 1,000 × 24/30 = 800 (from the 7th),
+      // Boris 2,100 (full month), Clara 1,500 × 16/30 = 800 (from the 15th).
+      assert.equal(Number(pnl.costOfServices) + Number(pnl.operatingExpenses), 3700)
       janLedger = await ledger()
       janSnapshot = JSON.stringify(await rows(jan))
     })
@@ -117,7 +119,7 @@ async function main() {
       const f = (await row(feb, "Alexander"))!
       assert.deepEqual([f.fix, f.departmentId, f.name], ["1300", other.id, "Alexander Petrov"])
       const j = (await row(jan, "Alexander"))!
-      assert.deepEqual([j.fix, j.approved, j.departmentId, j.name], ["1000", "1000", dept.id, "Alexander"], "January shows its snapshot, not today's profile")
+      assert.deepEqual([j.fix, j.approved, j.departmentId, j.name], ["1000", "800", dept.id, "Alexander"], "January shows its snapshot, not today's profile")
       assert.equal(JSON.stringify(await rows(jan)), janSnapshot)
     })
 

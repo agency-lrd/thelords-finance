@@ -19,6 +19,7 @@ import {
   approvalPreview,
   carryForwardEmployees,
   carryForwardPreview,
+  reopenMonth,
   type CarryForwardItem,
   type ChangeScope,
   type RuleConfig,
@@ -44,7 +45,7 @@ import { parseMonth } from "@/lib/period"
 
 export type CellResult = { ok: true; unconfirmed?: boolean } | { ok: false; message: string; conflict?: { current: string } }
 
-const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet"]
+const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet", "fact", "commission"]
 
 function month(key: string) {
   const m = parseMonth(key)
@@ -70,16 +71,16 @@ function done<T extends object>(extra?: T) {
 }
 
 /** expected: the cell value the user saw; a different current value is a conflict (nothing is written). */
-export async function updateCellAction(monthKey: string, employeeId: string, field: string, value: string, expected?: string | null): Promise<CellResult> {
+export async function updateCellAction(monthKey: string, employeeId: string, field: string, value: string, expected?: string | null, reason?: string | null): Promise<CellResult> {
   try {
     if (!FIELDS.includes(field as SheetField)) throw new UserInputError("Unknown column.")
     const user = await authorize(requiredPermission(field as SheetField))
-    if (value.length > 2000 || (expected?.length ?? 0) > 2000) throw new UserInputError("Value is too long.")
-    const result = await updateSheetCell(user, month(monthKey), employeeId, field as SheetField, value, undefined, typeof expected === "string" ? expected : null)
+    if (value.length > 2000 || (expected?.length ?? 0) > 2000 || (reason?.length ?? 0) > 500) throw new UserInputError("Value is too long.")
+    const result = await updateSheetCell(user, month(monthKey), employeeId, field as SheetField, value, undefined, typeof expected === "string" ? expected : null, undefined, typeof reason === "string" ? reason : null)
     return done(result)
   } catch (error) {
     if (error instanceof SheetConflictError) return { ok: false, message: error.message, conflict: { current: error.current } }
-    return fail(error)
+    return failRu(error)
   }
 }
 
@@ -110,6 +111,18 @@ const RU: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/No (\w+)→(\w+) rate for (.+?)\./, (m) => `Нет курса ${m[1]}→${m[2]} на ${m[3]}: добавьте курс, чтобы подтвердить.`],
   [/^Payroll for (.+) is not approved yet/, (m) => `Ведомость за ${m[1]} ещё не утверждена. Сначала утвердите её, затем переносите сотрудников.`],
   [/The employee is not on this month's sheet/, "Сотрудника нет в ведомости этого месяца — перенесите его из предыдущего месяца или добавьте."],
+  [/^(?:(.+): )?FACT PAYMENT is below the calculated salary/, (m) => `${m[1] ? `${m[1]}: ` : ""}FACT PAYMENT меньше расчётной суммы — укажите причину корректировки.`],
+  [/This employee has special terms/, "У сотрудника особые условия — измените их в «Add Terms»."],
+  [/Commission %: "(.+)" is not a number/, (m) => `Комиссия: «${m[1]}» — не число.`],
+  [/(.+) cannot exceed 100%/, "Процент не может быть больше 100."],
+  [/You do not have permission to cancel a payroll approval/, "Отменить утверждение может только администратор с правами payroll:approve и period:reopen."],
+  [/Enter the reason for cancelling the approval/, "Укажите причину отмены утверждения."],
+  [/^(.+) is not approved\.$/, (m) => `${m[1]} не утверждён.`],
+  [/Salary payments are already recorded for (.+)\. Approval/, (m) => `За ${m[1]} уже записаны выплаты зарплаты. Отменить утверждение можно только до первой выплаты: сначала сторнируйте выплаты.`],
+  [/This cell was changed by someone else/, "Ячейку уже изменил кто-то другой. Данные обновлены — проверьте новое значение и повторите."],
+  [/You do not have permission to edit this column/, "У вашей роли нет права менять эту колонку."],
+  [/^(.+): "(.+)" is not a number/, (m) => `${m[1]}: «${m[2]}» — не число.`],
+  [/^(.+) cannot be negative/, (m) => `${m[1]}: значение не может быть отрицательным.`],
   [/^(.+): no salary terms for this month/, (m) => `${m[1]}: нет условий оплаты на этот месяц — укажите FIX на странице сотрудника или добавьте его как нового.`],
 ]
 async function failRu(error: unknown) {
@@ -137,6 +150,19 @@ export async function approveMonthAction(monthKey: string, comment?: string | nu
   try {
     const user = await authorize("payroll:approve")
     await approveMonth(user, month(monthKey), typeof comment === "string" && comment.trim() ? comment.trim().slice(0, 500) : null)
+    revalidatePath("/pnl")
+    revalidatePath("/cash-flow")
+    return done()
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+/** Cancels the approval of a month (audited, reason required; refused once salaries are paid). */
+export async function reopenMonthAction(monthKey: string, reason: string): Promise<CellResult> {
+  try {
+    const user = await authorize("payroll:approve")
+    await reopenMonth(user, month(monthKey), typeof reason === "string" ? reason : "")
     revalidatePath("/pnl")
     revalidatePath("/cash-flow")
     return done()

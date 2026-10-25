@@ -6,11 +6,12 @@ import { decryptSecret, detectNetwork, encryptSecret, maskIdentifier } from "@/l
 import { UserInputError } from "@/lib/forms"
 import { Decimal, toBase } from "@/lib/money"
 import { calculatePayroll, describeRule, type PayrollResult, type RuleInput } from "@/lib/payroll/engine"
+import { payableDays, type Proration, type ProrationSettings } from "@/lib/payroll/proration"
 import { monthEnd, monthLabel, monthStart, type Month } from "@/lib/period"
 
 import { assertPeriodOpen, audit, ensurePeriod, fxRateFor, type Tx } from "./common"
 import { inTx, prisma, type Db } from "./db"
-import { accountByCode, postJournal } from "./ledger"
+import { accountByCode, postJournal, reverseJournal } from "./ledger"
 
 /*
  * The financial sheet: one row per employee per month, recreating the team's spreadsheet.
@@ -97,12 +98,28 @@ export type MonthSnapshot = {
   bonus: string
   deduction: string
   calculated: string
+  /** Added later; snapshots from before these existed lack them. */
+  fact?: string | null
+  factReason?: string | null
+  payable?: string
+  commissionPct?: string | null
+  proration?: Proration | null
+  fixProrated?: string | null
 }
 
-const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated"]
+const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated", "fact", "factReason", "payable", "commissionPct", "proration", "fixProrated"]
 
+/** The snapshot fields of a row (keys a snapshot lacks are left out, so live values are not blanked). */
 export function pickSnapshot(source: MonthSnapshot): MonthSnapshot {
-  return Object.fromEntries(SNAPSHOT_KEYS.map((k) => [k, source[k]])) as MonthSnapshot
+  return Object.fromEntries(SNAPSHOT_KEYS.filter((k) => source[k] !== undefined).map((k) => [k, source[k]])) as MonthSnapshot
+}
+
+/** Commission models whose rate the sheet's "Commission %" column edits directly. */
+const PCT_MODELS: RuleModel[] = ["PCT_ABOVE_KPI", "PCT_OF_PROFIT", "PCT_IF_KPI_MET"]
+
+export async function prorationSettings(db: Db | Tx, organizationId: string): Promise<ProrationSettings> {
+  const org = await db.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { payrollDayDivisor: true, payrollStartDayPaid: true } })
+  return { divisor: org.payrollDayDivisor, startDayPaid: org.payrollStartDayPaid }
 }
 
 async function profitKpi(db: Db | Tx, organizationId: string) {
@@ -127,6 +144,7 @@ export type SheetRow = Awaited<ReturnType<typeof getSheet>>["rows"][number]
 export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, options: { employeeId?: string } = {}) {
   // Sequential on purpose: db may be a transaction, which runs one query at a time.
   const kpi = await profitKpi(db, user.organizationId)
+  const proration = await prorationSettings(db, user.organizationId)
   const run = await findRun(db, user.organizationId, m)
   const period = await db.financialPeriod.findUnique({
     where: { organizationId_year_month: { organizationId: user.organizationId, year: m.year, month: m.month } },
@@ -153,7 +171,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       kpiActuals: { where: { kpiDefinitionId: kpi.id, period: { year: m.year, month: m.month } } },
       payrollAdjustments: { where: { period: { year: m.year, month: m.month }, status: { in: ["PENDING", "APPROVED", "APPLIED"] } } },
       payoutWallets: { where: { archivedAt: null }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }], take: 1 },
-      monthMemberships: { where: { period: { year: m.year, month: m.month } }, take: 1, select: { source: true, snapshot: true, snapshotAt: true } },
+      monthMemberships: { where: { period: { year: m.year, month: m.month } }, take: 1, select: { source: true, snapshot: true, snapshotAt: true, factPayment: true, factReason: true } },
       payrollItems: run
         ? { where: { payrollRunId: run.id }, include: { payments: { where: { status: { in: ["SENT", "CONFIRMED"] } } }, lines: true } }
         : { where: { id: "00000000-0000-0000-0000-000000000000" }, include: { payments: true, lines: true } },
@@ -170,7 +188,11 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
     const actual = e.kpiActuals[0]?.actualValue ?? null
     const approvedAdjustments = e.payrollAdjustments.filter((a) => a.status !== "PENDING")
     const pending = e.payrollAdjustments.filter((a) => a.status === "PENDING")
-    const calc = calculate(salary, rules, target, actual, approvedAdjustments)
+    const days = payableDays(m, e.hireDate, e.terminationDate, proration)
+    const member = e.monthMemberships[0] ?? null
+    const fact = member?.factPayment != null ? new Decimal(member.factPayment) : null
+    const calc = calculate(salary, rules, target, actual, approvedAdjustments, days)
+    const payable = fact ?? calc.net
 
     const item = e.payrollItems[0] ?? null
     const confirmed = !!item?.confirmedAt
@@ -180,7 +202,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
     const paid = item && itemFx ? paidBase.div(itemFx).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) : new Decimal(0)
     const outstanding = approvedNet ? Decimal.max(new Decimal(0), approvedNet.sub(paid)) : null
     const lastPayment = (item?.payments ?? []).map((p) => p.paidAt).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
-    const stale = confirmed && approvedNet !== null && !approvedNet.eq(calc.net)
+    const stale = confirmed && approvedNet !== null && !approvedNet.eq(payable)
 
     const bonus = sumAdjustments(e.payrollAdjustments, ["BONUS", "CORRECTION", "REIMBURSEMENT"])
     const deduction = sumAdjustments(e.payrollAdjustments, ["DEDUCTION", "ADVANCE_RECOVERY"])
@@ -206,6 +228,11 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       salaryApproved: !salary || !!salary.approvedById,
       terms: rules.map((r) => describeRule(ruleInput(r))).join(" + ") || null,
       rule: rules[0] ? ruleConfigOf(rules[0]) : ({ model: "NONE" } as RuleConfig),
+      /** Commission % the sheet edits inline (null: no commission, or a model edited in the terms dialog). */
+      commissionPct: rules.length === 1 && PCT_MODELS.includes(modelOf(rules[0])) ? ruleConfigOf(rules[0]).ratePct ?? null : null,
+      /** Payable days of the month for monthly FIX (start/end dates on the organization's day convention). */
+      proration: salary?.payBasis === "MONTHLY" && !days.full ? days : null,
+      fixProrated: salary?.payBasis === "MONTHLY" && !days.full ? calc.fixed.toString() : null,
       kpiTarget: str(target),
       /** The target comes from an earlier month (recurring), not set for this month. */
       kpiTargetInherited: targetInherited,
@@ -219,6 +246,11 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       deduction: deduction.toString(),
       pendingAdjustments: pending.length,
       calculated: calc.net.toString(),
+      /** FACT PAYMENT override (null: the calculated salary is paid). */
+      fact: fact?.toString() ?? null,
+      factReason: member?.factReason ?? null,
+      /** The final amount for the month: FACT PAYMENT if set, otherwise the calculated salary. */
+      payable: payable.toString(),
       warnings: calc.warnings,
       confirmed,
       stale,
@@ -240,7 +272,12 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
   for (const [i, r] of rows.entries()) {
     const member = employees.find((e) => e.id === r.employeeId)?.monthMemberships[0]
     const snap = frozen ? (member?.snapshot as MonthSnapshot | null) : null
-    if (snap) rows[i] = { ...r, ...(pickSnapshot(snap) as unknown as Partial<typeof r>), departmentName: ((snap.departmentId && departmentNames.get(snap.departmentId)) || snap.departmentName) as typeof r.departmentName, stale: false }
+    if (snap) {
+      const frozenRow = pickSnapshot(snap)
+      // Snapshots from before FACT PAYMENT and proration existed: the approved payslip amount is the payable.
+      const legacy = frozenRow.payable === undefined ? { fact: null, factReason: null, payable: r.approved ?? snap.calculated, proration: null, fixProrated: null } : {}
+      rows[i] = { ...r, ...(frozenRow as unknown as Partial<typeof r>), ...legacy, departmentName: ((snap.departmentId && departmentNames.get(snap.departmentId)) || snap.departmentName) as typeof r.departmentName, stale: false }
+    }
   }
 
   rows.sort((a, b) => (a.departmentName ?? "~").localeCompare(b.departmentName ?? "~") || Number(b.isTeamLead) - Number(a.isTeamLead) || a.name.localeCompare(b.name))
@@ -299,9 +336,12 @@ function calculate(
   target: Prisma.Decimal | null,
   actual: Prisma.Decimal | null,
   adjustments: { id: string; type: "BONUS" | "CORRECTION" | "DEDUCTION" | "REIMBURSEMENT" | "ADVANCE" | "ADVANCE_RECOVERY"; amount: Prisma.Decimal; reason: string }[],
+  days: Proration | null = null,
+  manualAdjustment: Decimal | null = null,
 ): PayrollResult {
   return calculatePayroll({
-    salary: salary ? { payBasis: salary.payBasis, amount: salary.baseAmount.toString() } : null,
+    salary: salary ? { payBasis: salary.payBasis, amount: salary.baseAmount.toString(), prorate: days } : null,
+    manualAdjustment: manualAdjustment?.toString() ?? null,
     kpi: { target: str(target), actual: str(actual) },
     rules: rules.map(ruleInput),
     adjustments: adjustments.map((a) => ({ id: a.id, type: a.type, amount: a.amount.toString(), reason: a.reason })),
@@ -327,6 +367,8 @@ export type SheetField =
   | "notes"
   | "hireDate"
   | "wallet"
+  | "fact"
+  | "commission"
 
 const FIELD_PERMISSION = {
   name: "employee:manage",
@@ -343,10 +385,12 @@ const FIELD_PERMISSION = {
   bonus: "adjustment:request",
   deduction: "adjustment:request",
   wallet: "wallet:manage",
+  fact: "salary:manage",
+  commission: "compensation:manage",
 } as const satisfies Record<SheetField, string>
 
 /** Fields whose change alters pay: a confirmed row is un-confirmed so it is re-checked. */
-const MONEY_FIELDS: SheetField[] = ["fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department"]
+const MONEY_FIELDS: SheetField[] = ["fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "fact", "commission"]
 
 const AMOUNT = /^-?\d{1,16}(\.\d{1,8})?$/
 
@@ -410,10 +454,12 @@ export function cellValue(row: SheetRow, field: SheetField): string {
     case "notes": return row.notes ?? ""
     case "hireDate": return row.hireDate
     case "wallet": return row.wallet?.masked ?? ""
+    case "fact": return row.fact ?? ""
+    case "commission": return row.commissionPct ?? ""
   }
 }
 
-const NUMERIC: SheetField[] = ["fix", "kpiTarget", "kpiActual", "bonus", "deduction"]
+const NUMERIC: SheetField[] = ["fix", "kpiTarget", "kpiActual", "bonus", "deduction", "fact", "commission"]
 
 function sameValue(field: SheetField, a: string, b: string) {
   if (NUMERIC.includes(field)) {
@@ -432,7 +478,7 @@ function sameValue(field: SheetField, a: string, b: string) {
  * changed since (another user, another tab), the edit is refused with SheetConflictError instead of
  * silently overwriting it. The employee row is locked for the duration, so concurrent edits queue.
  */
-export async function updateSheetCell(user: SessionUser, m: Month, employeeId: string, field: SheetField, raw: string, db: Db = prisma, expected?: string | null, scope?: ChangeScope) {
+export async function updateSheetCell(user: SessionUser, m: Month, employeeId: string, field: SheetField, raw: string, db: Db = prisma, expected?: string | null, scope?: ChangeScope, reason?: string | null) {
   if (!user.permissions.has(FIELD_PERMISSION[field])) throw new UserInputError("You do not have permission to edit this column.")
   return inTx(db, async (tx) => {
     const employee = await tx.employee.findFirst({ where: { id: employeeId, organizationId: user.organizationId } })
@@ -500,6 +546,35 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
       case "wallet":
         await setWallet(tx, user, employeeId, value)
         break
+      case "fact": {
+        // FACT PAYMENT: the final amount intended for the month. Not a payment: money sent is recorded
+        // separately. Paying less than the calculated salary is a correction and needs a reason.
+        const amount = parseCellAmount(value, "FACT PAYMENT")
+        const note = (reason ?? "").trim().slice(0, 500) || null
+        if (amount !== null) {
+          const current = (await getSheet(user, m, tx, { employeeId })).rows[0]
+          if (current && amount.lt(current.calculated) && !note && !current.factReason) {
+            throw new UserInputError("FACT PAYMENT is below the calculated salary: enter the reason for the correction.")
+          }
+        }
+        await tx.payrollMonthEmployee.update({
+          where: { periodId_employeeId: { periodId: period.id, employeeId } },
+          data: { factPayment: amount?.toString() ?? null, factReason: amount === null ? null : (note ?? undefined) },
+        })
+        break
+      }
+      case "commission": {
+        const pct = parseCellAmount(value, "Commission %")
+        const current = (await getSheet(user, m, tx, { employeeId })).rows[0]
+        const rule = current?.rule ?? { model: "NONE" as RuleModel }
+        if (rule.model !== "NONE" && !PCT_MODELS.includes(rule.model)) throw new UserInputError("This employee has special terms: change them in Add Terms.")
+        if (pct === null || pct.isZero()) {
+          await setCompensationRule(user, m, employeeId, { model: "NONE" }, tx)
+        } else {
+          await setCompensationRule(user, m, employeeId, { ...rule, model: rule.model === "NONE" ? "PCT_ABOVE_KPI" : rule.model, ratePct: pct.toString() }, tx)
+        }
+        break
+      }
     }
 
     // A confirmed row needs confirming again only if its result changed (department and currency are
@@ -507,13 +582,14 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
     let unconfirmed = false
     if (MONEY_FIELDS.includes(field)) {
       const after = (await getSheet(user, m, tx, { employeeId })).rows[0]
-      const unchanged = after?.approved != null && field !== "department" && field !== "currency" && new Decimal(after.calculated).eq(after.approved)
+      const unchanged = after?.approved != null && field !== "department" && field !== "currency" && new Decimal(after.payable).eq(after.approved)
       if (!unchanged) unconfirmed = await unconfirm(tx, run?.id, employeeId)
     }
     await audit(tx, user, `sheet.update.${field}`, "employee", employeeId, {
       month: `${m.year}-${String(m.month).padStart(2, "0")}`,
       // Wallet details are never written to the audit log.
       value: field === "wallet" ? (value ? maskIdentifier(value) : null) : value,
+      ...(field === "fact" && reason ? { reason } : {}),
       unconfirmed,
     })
     return { unconfirmed }
@@ -785,7 +861,7 @@ export async function setCompensationRule(user: SessionUser, m: Month, employeeI
 export async function addSheetEmployee(
   user: SessionUser,
   m: Month,
-  input: { name: string; departmentId: string; fix: string; currency: string; hireDate: Date | null },
+  input: { name: string; departmentId: string; fix: string; currency: string; hireDate: Date | null; commissionPct?: string | null },
   db: Db = prisma,
 ) {
   for (const p of ["employee:manage", "salary:manage"] as const) {
@@ -831,6 +907,11 @@ export async function addSheetEmployee(
       },
     })
     await tx.payrollMonthEmployee.create({ data: { organizationId: user.organizationId, periodId: period.id, employeeId: employee.id, source: "NEW", createdById: user.id } })
+    // Standard terms: 10% of profit above the KPI (changed per employee in the Commission % column).
+    const commission = input.commissionPct === undefined ? "10" : input.commissionPct
+    if (commission && Number(commission) > 0 && user.permissions.has("compensation:manage")) {
+      await setCompensationRule(user, m, employee.id, { model: "PCT_ABOVE_KPI", ratePct: commission }, tx)
+    }
     await audit(tx, user, "employee.create", "employee", employee.id, { name, departmentId: department.id, via: "sheet" })
     return employee
   })
@@ -867,7 +948,8 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
     if (!row.fix) throw new UserInputError(`${row.name}: enter FIX before confirming.`)
     if (!row.salaryApproved) throw new UserInputError(`${row.name}: the salary change is waiting for approval (salary:approve).`)
     if (row.pendingAdjustments > 0) throw new UserInputError(`${row.name}: a bonus or deduction is waiting for approval.`)
-    if (new Decimal(row.calculated).isNegative()) throw new UserInputError(`${row.name}: deductions exceed earnings.`)
+    if (new Decimal(row.payable).isNegative()) throw new UserInputError(`${row.name}: deductions exceed earnings.`)
+    if (row.fact !== null && new Decimal(row.fact).lt(row.calculated) && !row.factReason) throw new UserInputError(`${row.name}: FACT PAYMENT is below the calculated salary: enter the reason for the correction.`)
 
     if (!run) {
       await tx.payrollRun.create({ data: { organizationId: user.organizationId, periodId: period.id, currency: user.baseCurrency } })
@@ -891,7 +973,21 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
     const salary = employee.salaryConditions[0]
     const rules = employee.compensationScopes.map((s) => s.rule)
     const kpiActual = employee.kpiActuals[0] ?? null
-    const calc = calculate(salary, rules, employee.kpiTargets[0]?.targetValue ?? null, kpiActual?.actualValue ?? null, employee.payrollAdjustments)
+    const days = payableDays(m, employee.hireDate, employee.terminationDate, await prorationSettings(tx, user.organizationId))
+    const calculated = calculate(salary, rules, employee.kpiTargets[0]?.targetValue ?? null, kpiActual?.actualValue ?? null, employee.payrollAdjustments, days)
+    // FACT PAYMENT differing from the calculation becomes an explicit, reasoned payslip line.
+    const member = await tx.payrollMonthEmployee.findUniqueOrThrow({ where: { periodId_employeeId: { periodId: period.id, employeeId } } })
+    const difference = member.factPayment != null ? new Decimal(member.factPayment).sub(calculated.net) : null
+    const calc = difference && !difference.isZero()
+      ? calculatePayroll({
+          salary: { payBasis: salary.payBasis, amount: salary.baseAmount.toString(), prorate: days },
+          kpi: { target: str(employee.kpiTargets[0]?.targetValue ?? null), actual: str(kpiActual?.actualValue ?? null) },
+          rules: rules.map(ruleInput),
+          adjustments: employee.payrollAdjustments.map((a) => ({ id: a.id, type: a.type, amount: a.amount.toString(), reason: a.reason })),
+          manualAdjustment: difference.toString(),
+          manualReason: `FACT PAYMENT${member.factReason ? `: ${member.factReason}` : ""}`.slice(0, 500),
+        })
+      : calculated
     const fxRate = await fxRateFor(tx, user, salary.currency, m)
 
     await tx.payrollItem.create({
@@ -924,7 +1020,7 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
         },
       },
     })
-    await audit(tx, user, "payroll_item.confirm", "employee", employeeId, { month: `${m.year}-${m.month}`, net: calc.net.toString(), currency: salary.currency })
+    await audit(tx, user, "payroll_item.confirm", "employee", employeeId, { month: `${m.year}-${m.month}`, net: calc.net.toString(), calculated: calculated.net.toString(), currency: salary.currency })
   })
 }
 
@@ -1007,6 +1103,81 @@ export async function approveMonth(user: SessionUser, m: Month, comment: string 
     })
     if (entry) await tx.payrollRun.update({ where: { id: run.id }, data: { journalEntryId: entry.id } })
     await audit(tx, user, "payroll_run.approve", "payroll_run", run.id, { month: `${m.year}-${m.month}`, items: items.length, journalEntryId: entry?.id ?? null })
+  })
+}
+
+/**
+ * Cancels the approval of a month ("Отменить утверждение") so it can be corrected and approved again.
+ * Allowed while nothing has been paid for the month and its accounting period is open. Nothing is
+ * deleted or silently changed:
+ *   - the approval, its payslips and snapshots are copied to payroll_approval_versions (append-only);
+ *   - the payroll accrual is cancelled by a mirror (reversal) journal entry; the original stays, REVERSED;
+ *   - the approval history gets a "changes requested" entry with the reason; the audit log has it too;
+ *   - the month's snapshots are cleared so the sheet is live again. Rows stay confirmed until changed.
+ * Other months are not touched: later months keep their own snapshots and terms.
+ */
+export async function reopenMonth(user: SessionUser, m: Month, reason: string, db: Db = prisma) {
+  if (!user.permissions.has("payroll:approve") || !user.permissions.has("period:reopen")) throw new UserInputError("You do not have permission to cancel a payroll approval.")
+  const why = (reason ?? "").trim().slice(0, 1000)
+  if (why.length < 3) throw new UserInputError("Enter the reason for cancelling the approval.")
+  return inTx(db, async (tx) => {
+    const period = await ensurePeriod(tx, user.organizationId, m)
+    await tx.$executeRaw`SELECT 1 FROM payroll_runs WHERE period_id = ${period.id}::uuid FOR UPDATE`
+    assertPeriodOpen(period, m, user)
+    const run = await findRun(tx, user.organizationId, m)
+    if (!run || !APPROVED_RUN.includes(run.status)) throw new UserInputError(`${monthLabel(m)} is not approved.`)
+    const items = await tx.payrollItem.findMany({ where: { payrollRunId: run.id }, include: { lines: true, payments: true } })
+    const payments = items.flatMap((i) => i.payments).filter((p) => p.status !== "FAILED" && p.status !== "REVERSED")
+    if (run.status !== "APPROVED" || payments.length) {
+      throw new UserInputError(`Salary payments are already recorded for ${monthLabel(m)}. Approval can be cancelled only before any payment.`)
+    }
+    const members = await tx.payrollMonthEmployee.findMany({ where: { periodId: period.id } })
+    const approval = run.approvals.filter((a) => a.decision === "APPROVED").at(-1) ?? null
+    const version = (await tx.payrollApprovalVersion.count({ where: { payrollRunId: run.id } })) + 1
+
+    const reversal = run.journalEntryId
+      ? await reverseJournal(tx, user, run.journalEntryId, { periodId: period.id, entryDate: monthEnd(m), description: `Payroll ${monthLabel(m)}: approval cancelled (${why})`.slice(0, 500) })
+      : null
+    const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue
+    await tx.payrollApprovalVersion.create({
+      data: {
+        organizationId: user.organizationId,
+        payrollRunId: run.id,
+        periodId: period.id,
+        version,
+        approvedById: approval?.approverId ?? null,
+        approvedAt: approval ? new Date(approval.decidedAt) : null,
+        reopenedById: user.id,
+        reason: why,
+        previousStatus: run.status,
+        journalEntryId: run.journalEntryId,
+        reversalEntryId: reversal?.id ?? null,
+        content: json({
+          members: members.map((x) => ({ employeeId: x.employeeId, source: x.source, snapshot: x.snapshot, snapshotAt: x.snapshotAt, factPayment: x.factPayment, factReason: x.factReason })),
+          items: items.map((i) => ({ ...i, payments: undefined })),
+        }),
+      },
+    })
+
+    await tx.$executeRaw`SELECT set_config('finance.payroll_reopen', 'on', true)`
+    await tx.payrollMonthEmployee.updateMany({ where: { periodId: period.id, NOT: { snapshot: { equals: Prisma.DbNull } } }, data: { snapshot: Prisma.DbNull, snapshotAt: null } })
+    await tx.payrollRun.update({ where: { id: run.id }, data: { status: "CALCULATED", journalEntryId: null } })
+    await tx.$executeRaw`SELECT set_config('finance.payroll_reopen', 'off', true)`
+
+    const adjustmentIds = items.flatMap((i) => i.lines.map((l) => l.adjustmentId).filter((id): id is string => !!id))
+    if (adjustmentIds.length) await tx.payrollAdjustment.updateMany({ where: { id: { in: adjustmentIds }, status: "APPLIED" }, data: { status: "APPROVED" } })
+    const step = (await tx.payrollApproval.count({ where: { payrollRunId: run.id } })) + 1
+    await tx.payrollApproval.create({ data: { payrollRunId: run.id, step, approverId: user.id, decision: "CHANGES_REQUESTED", comment: `Approval cancelled: ${why}`.slice(0, 1000) } })
+    await audit(tx, user, "payroll_run.reopen", "payroll_run", run.id, {
+      month: `${m.year}-${String(m.month).padStart(2, "0")}`,
+      reason: why,
+      version,
+      previousStatus: run.status,
+      approvedBy: approval?.approver.email ?? null,
+      reversedEntryId: run.journalEntryId,
+      reversalEntryId: reversal?.id ?? null,
+    })
+    return { version, reversalEntryId: reversal?.id ?? null }
   })
 }
 
@@ -1126,7 +1297,7 @@ export async function approvalPreview(user: SessionUser, m: Month, db: Db = pris
         ? "salary_not_approved"
         : r.pendingAdjustments > 0
           ? "pending_adjustment"
-          : new Decimal(r.calculated).isNegative()
+          : new Decimal(r.payable).isNegative()
             ? "negative"
             : r.stale
               ? "changed"
@@ -1136,8 +1307,13 @@ export async function approvalPreview(user: SessionUser, m: Month, db: Db = pris
     if (reason) issues.push({ employeeId: r.employeeId, name: r.name, reason })
   }
   const totals = new Map<string, Decimal>()
-  for (const r of sheet.rows) totals.set(r.currency, (totals.get(r.currency) ?? new Decimal(0)).add(r.confirmed && !r.stale && r.approved ? r.approved : r.calculated))
-  const approval = run?.approvals.find((a) => a.decision === "APPROVED") ?? null
+  const calculatedTotals = new Map<string, Decimal>()
+  for (const r of sheet.rows) {
+    totals.set(r.currency, (totals.get(r.currency) ?? new Decimal(0)).add(r.confirmed && !r.stale && r.approved ? r.approved : r.payable))
+    calculatedTotals.set(r.currency, (calculatedTotals.get(r.currency) ?? new Decimal(0)).add(r.calculated))
+  }
+  const versions = run ? await db.payrollApprovalVersion.findMany({ where: { payrollRunId: run.id }, orderBy: { version: "asc" }, include: { reopenedBy: { select: { email: true } } } }) : []
+  const approval = run && APPROVED_RUN.includes(run.status) ? (run.approvals.filter((a) => a.decision === "APPROVED").at(-1) ?? null) : null
   return {
     month: `${m.year}-${String(m.month).padStart(2, "0")}`,
     runStatus: run?.status ?? null,
@@ -1145,6 +1321,12 @@ export async function approvalPreview(user: SessionUser, m: Month, db: Db = pris
     employees: sheet.rows.length,
     confirmed: sheet.rows.filter((r) => r.confirmed && !r.stale).length,
     totals: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toString() })),
+    calculatedTotals: [...calculatedTotals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toString() })),
+    /** Rows whose FACT PAYMENT differs from the calculated salary. */
+    corrections: sheet.rows.filter((r) => r.fact !== null && !new Decimal(r.fact).eq(r.calculated)).map((r) => ({ employeeId: r.employeeId, name: r.name, currency: r.currency, calculated: r.calculated, payable: r.payable, reason: r.factReason })),
+    /** Earlier approvals of this month that were re-opened. */
+    reopenings: versions.map((v) => ({ version: v.version, by: v.reopenedBy.email, at: v.reopenedAt.toISOString(), reason: v.reason })),
+    canReopen: !!run && run.status === "APPROVED" && user.permissions.has("payroll:approve") && user.permissions.has("period:reopen") && sheet.periodStatus !== "CLOSED" && sheet.periodStatus !== "LOCKED",
     issues,
     approvedBy: approval?.approver.email ?? null,
     approvedAt: approval?.decidedAt.toISOString() ?? null,
@@ -1205,6 +1387,7 @@ export async function carryForwardPreview(user: SessionUser, m: Month, db: Db = 
       ratePct: r.rule.ratePct ?? null,
       model: r.rule.model,
       kpiTarget: r.kpiTargetRecurring || r.kpiTargetInherited ? r.kpiTarget : null,
+      previousKpi: r.kpiTarget,
       kpiRecurring: r.kpiTargetRecurring || r.kpiTargetInherited,
       present: present.has(r.employeeId),
     })),
@@ -1258,7 +1441,9 @@ export async function carryForwardEmployees(user: SessionUser, m: Month, items: 
         if (departmentId) await setDepartmentFrom(tx, user, employee.id, departmentId, start)
         const fix = edit.fix ? parseCellAmount(edit.fix, "FIX", { allowEmpty: false }) : source.fix ? new Decimal(source.fix) : null
         if (fix) await setSalaryFrom(tx, user, employee, m, { amount: fix, currency: edit.currency || source.currency }, "future")
-        if (source.rule.model !== "NONE" && user.permissions.has("compensation:manage")) {
+        if (source.rule.model === "NONE" && edit.ratePct && Number(edit.ratePct) > 0 && user.permissions.has("compensation:manage")) {
+          await setCompensationRule(user, m, employee.id, { model: "PCT_ABOVE_KPI", ratePct: edit.ratePct }, tx)
+        } else if (source.rule.model !== "NONE" && user.permissions.has("compensation:manage")) {
           const rateChanged = !!edit.ratePct && edit.ratePct !== source.rule.ratePct
           const scopes = await tx.compensationAssignment.count({ where: { employeeId: employee.id, ...overlapsMonth(m) } })
           if (rateChanged || !scopes) await setCompensationRule(user, m, employee.id, rateChanged ? { ...source.rule, ratePct: edit.ratePct! } : source.rule, tx)

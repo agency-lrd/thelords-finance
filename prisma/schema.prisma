@@ -545,30 +545,33 @@ model Organization {
   baseCurrency         String   @map("base_currency") @db.VarChar(10)
   fiscalYearStartMonth Int      @default(1) @map("fiscal_year_start_month") @db.SmallInt
   timezone             String   @default("UTC")
+  payrollDayDivisor    Int      @default(30) @map("payroll_day_divisor") @db.SmallInt
+  payrollStartDayPaid  Boolean  @default(true) @map("payroll_start_day_paid")
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  roles              Role[]
-  roleAssignments    UserRoleAssignment[]
-  periods            FinancialPeriod[]
-  exchangeRates      ExchangeRate[]
-  departments        Department[]
-  employees          Employee[]
-  compensationRules  CompensationRule[]
-  kpiDefinitions     KpiDefinition[]
-  kpiTargets         KpiTarget[]
-  kpiActuals         KpiActual[]
-  payrollRuns        PayrollRun[]
-  payrollAdjustments PayrollAdjustment[]
-  clients            Client[]
-  projects           Project[]
-  categories         FinancialCategory[]
-  ledgerAccounts     LedgerAccount[]
-  financialAccounts  FinancialAccount[]
-  journalEntries     JournalEntry[]
-  shareholders       Shareholder[]
-  distributions      Distribution[]
-  auditLogs          AuditLog[]
+  roles                   Role[]
+  roleAssignments         UserRoleAssignment[]
+  periods                 FinancialPeriod[]
+  exchangeRates           ExchangeRate[]
+  departments             Department[]
+  employees               Employee[]
+  compensationRules       CompensationRule[]
+  kpiDefinitions          KpiDefinition[]
+  kpiTargets              KpiTarget[]
+  kpiActuals              KpiActual[]
+  payrollRuns             PayrollRun[]
+  payrollApprovalVersions PayrollApprovalVersion[]
+  payrollAdjustments      PayrollAdjustment[]
+  clients                 Client[]
+  projects                Project[]
+  categories              FinancialCategory[]
+  ledgerAccounts          LedgerAccount[]
+  financialAccounts       FinancialAccount[]
+  journalEntries          JournalEntry[]
+  shareholders            Shareholder[]
+  distributions           Distribution[]
+  auditLogs               AuditLog[]
 
   baseCurrencyRef  Currency                 @relation("OrganizationBaseCurrency", fields: [baseCurrency], references: [code], onDelete: Restrict)
   transactions     Transaction[]
@@ -595,32 +598,34 @@ model AppUser {
   createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  employee              Employee?
-  shareholder           Shareholder?
-  roleAssignments       UserRoleAssignment[]     @relation("AssignedUser")
-  grantedAssignments    UserRoleAssignment[]     @relation("GrantedBy")
-  closedPeriods         FinancialPeriod[]
-  salaryApprovals       SalaryCondition[]
-  adjustmentsRequested  PayrollAdjustment[]      @relation("AdjustmentRequestedBy")
-  adjustmentsApproved   PayrollAdjustment[]      @relation("AdjustmentApprovedBy")
-  payrollApprovals      PayrollApproval[]
-  payrollItemsConfirmed PayrollItem[]            @relation("PayrollItemConfirmedBy")
-  journalEntriesCreated JournalEntry[]           @relation("JournalCreatedBy")
-  journalEntriesPosted  JournalEntry[]           @relation("JournalPostedBy")
-  distributionApprovals Distribution[]
-  kpiActualsRecorded    KpiActual[]
-  auditLogs             AuditLog[]
-  transactionsCreated   Transaction[]            @relation("TransactionCreatedBy")
-  transactionsPosted    Transaction[]            @relation("TransactionPostedBy")
-  vaultCreated          VaultCredential[]        @relation("VaultCredentialCreatedBy")
-  vaultUpdated          VaultCredential[]        @relation("VaultCredentialUpdatedBy")
-  vaultGrants           VaultCredentialGrant[]   @relation("VaultGrantUser")
-  vaultGrantsGiven      VaultCredentialGrant[]   @relation("VaultGrantGrantedBy")
-  aiConversations       AiConversation[]
-  aiMessages            AiMessage[]
-  targetsUpdated        FinancialTarget[]
-  importBatches         TransactionImportBatch[]
-  monthEmployeesAdded   PayrollMonthEmployee[]
+  employee                 Employee?
+  shareholder              Shareholder?
+  roleAssignments          UserRoleAssignment[]     @relation("AssignedUser")
+  grantedAssignments       UserRoleAssignment[]     @relation("GrantedBy")
+  closedPeriods            FinancialPeriod[]
+  salaryApprovals          SalaryCondition[]
+  adjustmentsRequested     PayrollAdjustment[]      @relation("AdjustmentRequestedBy")
+  adjustmentsApproved      PayrollAdjustment[]      @relation("AdjustmentApprovedBy")
+  payrollApprovals         PayrollApproval[]
+  payrollItemsConfirmed    PayrollItem[]            @relation("PayrollItemConfirmedBy")
+  journalEntriesCreated    JournalEntry[]           @relation("JournalCreatedBy")
+  journalEntriesPosted     JournalEntry[]           @relation("JournalPostedBy")
+  distributionApprovals    Distribution[]
+  kpiActualsRecorded       KpiActual[]
+  auditLogs                AuditLog[]
+  transactionsCreated      Transaction[]            @relation("TransactionCreatedBy")
+  transactionsPosted       Transaction[]            @relation("TransactionPostedBy")
+  vaultCreated             VaultCredential[]        @relation("VaultCredentialCreatedBy")
+  vaultUpdated             VaultCredential[]        @relation("VaultCredentialUpdatedBy")
+  vaultGrants              VaultCredentialGrant[]   @relation("VaultGrantUser")
+  vaultGrantsGiven         VaultCredentialGrant[]   @relation("VaultGrantGrantedBy")
+  aiConversations          AiConversation[]
+  aiMessages               AiMessage[]
+  targetsUpdated           FinancialTarget[]
+  importBatches            TransactionImportBatch[]
+  monthEmployeesAdded      PayrollMonthEmployee[]
+  approvalVersionsApproved PayrollApprovalVersion[] @relation("ApprovalVersionApprover")
+  approvalVersionsReopened PayrollApprovalVersion[] @relation("ApprovalVersionReopener")
 
   @@map("app_users")
 }
@@ -710,14 +715,15 @@ model FinancialPeriod {
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  closedBy           AppUser?               @relation(fields: [closedById], references: [id], onDelete: Restrict)
+  organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  closedBy           AppUser?                 @relation(fields: [closedById], references: [id], onDelete: Restrict)
   kpiTargets         KpiTarget[]
   kpiActuals         KpiActual[]
   payrollRuns        PayrollRun[]
   payrollAdjustments PayrollAdjustment[]
-  monthEmployees     PayrollMonthEmployee[] @relation("MonthRoster")
-  monthEmployeesNext PayrollMonthEmployee[] @relation("MonthRosterSource")
+  monthEmployees     PayrollMonthEmployee[]   @relation("MonthRoster")
+  monthEmployeesNext PayrollMonthEmployee[]   @relation("MonthRosterSource")
+  approvalVersions   PayrollApprovalVersion[] @relation("ApprovalVersions")
   projectIncome      ProjectIncome[]
   projectCosts       ProjectCost[]
   journalEntries     JournalEntry[]
@@ -1154,12 +1160,13 @@ model PayrollRun {
   createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  period       FinancialPeriod   @relation(fields: [periodId], references: [id], onDelete: Restrict)
-  journalEntry JournalEntry?     @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
-  items        PayrollItem[]
-  approvals    PayrollApproval[]
-  currencyRef  Currency          @relation("PayrollRunCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  organization     Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  period           FinancialPeriod          @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  journalEntry     JournalEntry?            @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  items            PayrollItem[]
+  approvals        PayrollApproval[]
+  approvalVersions PayrollApprovalVersion[]
+  currencyRef      Currency                 @relation("PayrollRunCurrency", fields: [currency], references: [code], onDelete: Restrict)
 
   @@unique([organizationId, periodId, runType, sequence])
   @@map("payroll_runs")
@@ -2105,6 +2112,8 @@ model PayrollMonthEmployee {
   carriedFromPeriodId String?           @map("carried_from_period_id") @db.Uuid
   snapshot            Json?
   snapshotAt          DateTime?         @map("snapshot_at") @db.Timestamptz(6)
+  factPayment         Decimal?          @map("fact_payment") @db.Decimal(20, 2)
+  factReason          String?           @map("fact_reason")
   createdById         String?           @map("created_by_id") @db.Uuid
   createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -2117,4 +2126,33 @@ model PayrollMonthEmployee {
   @@unique([periodId, employeeId])
   @@index([employeeId])
   @@map("payroll_month_employees")
+}
+
+/// An approval that was later re-opened, with the payslips and snapshots it contained. Append-only.
+model PayrollApprovalVersion {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  payrollRunId    String    @map("payroll_run_id") @db.Uuid
+  periodId        String    @map("period_id") @db.Uuid
+  version         Int
+  approvedById    String?   @map("approved_by_id") @db.Uuid
+  approvedAt      DateTime? @map("approved_at") @db.Timestamptz(6)
+  reopenedById    String    @map("reopened_by_id") @db.Uuid
+  /// Set by the database (transaction time): the payroll status trigger matches it to now().
+  reopenedAt      DateTime  @default(dbgenerated("CURRENT_TIMESTAMP")) @map("reopened_at") @db.Timestamptz(6)
+  reason          String
+  previousStatus  String    @map("previous_status")
+  journalEntryId  String?   @map("journal_entry_id") @db.Uuid
+  reversalEntryId String?   @map("reversal_entry_id") @db.Uuid
+  content         Json
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  payrollRun   PayrollRun      @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
+  period       FinancialPeriod @relation("ApprovalVersions", fields: [periodId], references: [id], onDelete: Restrict)
+  approvedBy   AppUser?        @relation("ApprovalVersionApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  reopenedBy   AppUser         @relation("ApprovalVersionReopener", fields: [reopenedById], references: [id], onDelete: Restrict)
+
+  @@unique([payrollRunId, version])
+  @@index([periodId])
+  @@map("payroll_approval_versions")
 }

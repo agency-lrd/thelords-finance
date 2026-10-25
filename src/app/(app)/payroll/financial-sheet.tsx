@@ -73,6 +73,8 @@ type ColKey =
   | "deduction"
   | "kpiTarget"
   | "kpiActual"
+  | "commission"
+  | "fact"
   | "calculated"
   | "confirm"
   | "approved"
@@ -91,7 +93,7 @@ type ColKey =
 type Kind = "text" | "money" | "select" | "check" | "terms" | "wallet" | "date" | "output"
 type Col = { key: ColKey; kind: Kind; width: number; field?: string; can: boolean; money?: boolean }
 
-const MONEY_TOTALS: ColKey[] = ["fix", "variable", "bonus", "deduction", "kpiTarget", "kpiActual", "calculated", "approved", "paid", "outstanding"]
+const MONEY_TOTALS: ColKey[] = ["fix", "variable", "bonus", "deduction", "kpiTarget", "kpiActual", "calculated", "fact", "approved", "paid", "outstanding"]
 
 
 const STATUSES = ["ONBOARDING", "ACTIVE", "ON_LEAVE", "TERMINATED"] as const
@@ -112,6 +114,8 @@ function baseValue(row: SheetRow, col: ColKey, t: Dictionary): string {
     case "deduction": return row.deduction === "0" ? "" : row.deduction
     case "kpiTarget": return row.kpiTarget ?? ""
     case "kpiActual": return row.kpiActual ?? ""
+    case "commission": return row.commissionPct ?? ""
+    case "fact": return row.payable
     case "calculated": return row.calculated
     case "confirm": return row.confirmed ? "TRUE" : "FALSE"
     case "approved": return row.approved ?? ""
@@ -201,24 +205,28 @@ export function FinancialSheet(props: Props) {
     const base: Col[] = [
       { key: "name", kind: "text", width: 190, field: "name", can: canEdit(perms.employee) },
       { key: "department", kind: "select", width: 170, field: "department", can: canEdit(perms.employee) },
-      { key: "fix", kind: "money", width: 110, field: "fix", can: canEdit(perms.salary), money: true },
-      { key: "terms", kind: "terms", width: 230, can: canEdit(perms.compensation) },
-      { key: "variable", kind: "output", width: 110, can: false, money: true },
-      { key: "bonus", kind: "money", width: 105, field: "bonus", can: canEdit(perms.adjustment), money: true },
-      { key: "deduction", kind: "money", width: 105, field: "deduction", can: canEdit(perms.adjustment), money: true },
+      { key: "fix", kind: "money", width: 120, field: "fix", can: canEdit(perms.salary), money: true },
+      { key: "terms", kind: "terms", width: 200, can: canEdit(perms.compensation) },
       { key: "kpiTarget", kind: "money", width: 120, field: "kpiTarget", can: canEdit(perms.kpi), money: true },
       { key: "kpiActual", kind: "money", width: 120, field: "kpiActual", can: canEdit(perms.kpi), money: true },
-      { key: "calculated", kind: "output", width: 120, can: false, money: true },
+      { key: "commission", kind: "money", width: 100, field: "commission", can: canEdit(perms.compensation) },
+      { key: "variable", kind: "output", width: 110, can: false, money: true },
+      { key: "bonus", kind: "money", width: 115, field: "bonus", can: canEdit(perms.adjustment), money: true },
+      { key: "calculated", kind: "output", width: 130, can: false, money: true },
+      { key: "fact", kind: "money", width: 150, field: "fact", can: canEdit(perms.salary), money: true },
       { key: "confirm", kind: "check", width: 84, can: canEdit(perms.prepare) },
-      { key: "approved", kind: "output", width: 125, can: false, money: true },
-      { key: "paid", kind: "output", width: 110, can: false, money: true },
-      { key: "outstanding", kind: "output", width: 130, can: false, money: true },
       { key: "wallet", kind: "wallet", width: 190, field: "wallet", can: canEdit(perms.wallet) },
       { key: "startWork", kind: "date", width: 100, field: "hireDate", can: canEdit(perms.employee) },
     ]
+    // After approval the payment columns matter; otherwise they are in "more columns".
+    if (paying) base.push({ key: "outstanding", kind: "output", width: 130, can: false, money: true })
     if (!extra) return base
     return [
       ...base,
+      { key: "deduction", kind: "money", width: 105, field: "deduction", can: canEdit(perms.adjustment), money: true },
+      { key: "approved", kind: "output", width: 125, can: false, money: true },
+      { key: "paid", kind: "output", width: 110, can: false, money: true },
+      ...(paying ? [] : [{ key: "outstanding" as const, kind: "output" as const, width: 130, can: false, money: true }]),
       { key: "position", kind: "text", width: 150, field: "position", can: canEdit(perms.employee) },
       { key: "status", kind: "select", width: 120, field: "status", can: canEdit(perms.employee) },
       { key: "teamLead", kind: "check", width: 60, field: "isTeamLead", can: canEdit(perms.employee) },
@@ -227,7 +235,7 @@ export function FinancialSheet(props: Props) {
       { key: "paymentDate", kind: "output", width: 110, can: false },
       { key: "notes", kind: "text", width: 220, field: "notes", can: canEdit(perms.employee) },
     ]
-  }, [editable, perms, extra])
+  }, [editable, perms, extra, paying])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -260,6 +268,7 @@ export function FinancialSheet(props: Props) {
       case "teamLead": return String(row.isTeamLead)
       case "bonus": return row.bonus
       case "deduction": return row.deduction
+      case "fact": return row.fact ?? ""
       default: return baseValue(row, col, t)
     }
   }
@@ -304,10 +313,16 @@ export function FinancialSheet(props: Props) {
         return false
       }
     }
+    // FACT PAYMENT below the calculated salary is a correction: ask for the reason once.
+    let reason: string | null = null
+    if (col.key === "fact" && value !== "" && Number(value) < Number(row.calculated) && !row.factReason) {
+      reason = window.prompt(A.payroll.factReasonPrompt)?.trim() || null
+      if (!reason) return false
+    }
     const before = expected ?? serverValue(row, col.key)
-    setPending((p) => ({ ...p, [key(row, col.key)]: col.kind === "money" || col.key === "startWork" ? value : input }))
+    setPending((p) => ({ ...p, [key(row, col.key)]: col.kind === "money" || col.key === "startWork" ? (col.key === "fact" && value === "" ? row.calculated : value) : input }))
     setInflight((n) => n + 1)
-    const result = await updateCellAction(monthKey, row.employeeId, col.field, value, col.key === "wallet" ? null : before).catch(() => ({ ok: false as const, message: locale === "ru" ? "Соединение прервано" : "Connection lost" }))
+    const result = await updateCellAction(monthKey, row.employeeId, col.field, value, col.key === "wallet" ? null : before, reason).catch(() => ({ ok: false as const, message: locale === "ru" ? "Соединение прервано" : "Connection lost" }))
     setInflight((n) => n - 1)
     if (!result.ok) {
       setPending((p) => {
@@ -639,7 +654,7 @@ export function FinancialSheet(props: Props) {
           )}
           {editable && perms.employee && perms.salary && (
             <Button variant="outline" size="sm" onClick={() => setPanel("carry")} title={A.payroll.carry}>
-              <Copy /> {locale === "ru" ? "Перенести из прошлого месяца" : "Carry over"}
+              <Copy /> {A.payroll.carry}
             </Button>
           )}
           {perms.structure && (
@@ -667,6 +682,11 @@ export function FinancialSheet(props: Props) {
           {perms.approve && rows.length > 0 && (props.runStatus === null || props.runStatus === "DRAFT" || props.runStatus === "CALCULATED") && (
             <Button size="sm" onClick={() => setPanel("approve")} disabled={busy} title={unconfirmed ? fill(t.dashboard.unconfirmed, { n: unconfirmed }) : undefined}>
               <Check /> {t.sheet.approveMonth}
+            </Button>
+          )}
+          {perms.approve && perms.periodReopen && props.runStatus === "APPROVED" && (
+            <Button size="sm" variant="outline" onClick={() => setPanel("approve")} disabled={busy}>
+              <AlertTriangle /> {A.payroll.reopen}
             </Button>
           )}
         </div>
@@ -825,6 +845,8 @@ export function FinancialSheet(props: Props) {
                               onConditions={editable && (perms.salary || perms.kpi) ? () => setConditionsFor(row) : undefined}
                               conditionsLabel={A.payroll.conditions}
                               inheritedLabel={A.payroll.inherited}
+                              factTexts={{ reset: A.payroll.factReset, manual: A.payroll.factManual, difference: A.payroll.factDifference, days: A.payroll.prorationDays, prorated: A.payroll.prorationTip }}
+                              onResetFact={col.can && col.key === "fact" ? async () => { if (await saveCell(row, col, "")) refresh() } : undefined}
                               onToggle={() => toggle(row, col)}
                               onTerms={() => col.can && setTermsFor(row)}
                               onPay={() => setPayFor(row)}
@@ -1032,6 +1054,8 @@ function CellView(props: {
   onConditions?: () => void
   conditionsLabel: string
   inheritedLabel: string
+  factTexts: { reset: string; manual: string; difference: string; days: string; prorated: string }
+  onResetFact?: () => void
 }) {
   const { row, col, raw, locale, t } = props
   const money = (v: string | null, opts = {}) => formatAmount(v, row.currency, locale, opts)
@@ -1069,11 +1093,30 @@ function CellView(props: {
       )
     case "fix":
       return (
-        <span className="flex items-center justify-end gap-1.5 font-semibold">
+        <span
+          className="flex items-center justify-end gap-1.5 font-semibold"
+          title={row.proration && row.fixProrated ? fill(props.factTexts.prorated, { fix: money(raw || null), days: String(row.proration.days), divisor: String(row.proration.divisor), amount: money(row.fixProrated) }) : undefined}
+        >
           {!row.salaryApproved && <span title={t.sheet.salaryPending}><AlertTriangle className="size-3 text-amber-400" /></span>}
+          {row.proration && <span className="rounded bg-sky-500/15 px-1 font-sans text-[10px] font-medium text-sky-300">{fill(props.factTexts.days, { days: String(row.proration.days), divisor: String(row.proration.divisor) })}</span>}
           {money(raw || null)}
         </span>
       )
+    case "commission":
+      return <>{raw ? `${raw}%` : <span className="text-muted-foreground">—</span>}</>
+    case "fact": {
+      const manual = row.fact !== null
+      const diff = Number(row.payable) - Number(row.calculated)
+      return (
+        <span className="flex items-center justify-end gap-1.5 font-semibold" title={manual ? `${props.factTexts.manual}${row.factReason ? `: ${row.factReason}` : ""}\n${props.factTexts.difference}: ${money(String(diff))}` : undefined}>
+          {manual && props.onResetFact && (
+            <button type="button" onClick={(e) => { e.stopPropagation(); props.onResetFact?.() }} className="font-sans text-[11px] text-muted-foreground hover:text-primary" title={props.factTexts.reset} aria-label={props.factTexts.reset}>↺</button>
+          )}
+          {manual && diff !== 0 && <span className={cn("font-sans text-[10px]", diff > 0 ? "text-emerald-300" : "text-amber-300")}>{diff > 0 ? "+" : ""}{formatAmount(String(diff), row.currency, locale)}</span>}
+          <span className={cn(manual && "text-amber-200 underline decoration-dotted")}>{money(raw)}</span>
+        </span>
+      )
+    }
     case "terms":
       return (
         <button type="button" onClick={props.onTerms} className={cn("block w-full truncate text-left font-medium", !props.col.can && "cursor-default")}>

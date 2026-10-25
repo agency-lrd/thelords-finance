@@ -40,6 +40,8 @@ export type SalaryInput = {
   amount: Num
   workedHours?: Num | null
   workedDays?: Num | null
+  /** Monthly FIX for part of the month: paid for `days` of `divisor` (see proration.ts). */
+  prorate?: { days: number; divisor: number } | null
 }
 
 export type RuleTier = { from: Num; to?: Num | null; rate?: Num | null; fixedAmount?: Num | null }
@@ -67,6 +69,8 @@ export type PayrollInput = {
   adjustments?: AdjustmentInput[]
   /** Signed manual correction entered on the sheet (positive adds, negative subtracts). */
   manualAdjustment?: Num | null
+  /** Shown on the payslip line of the manual adjustment. */
+  manualReason?: string | null
   /** Minor-unit precision of the payslip currency (2 for USD/EUR/GBP). */
   decimals?: number
 }
@@ -175,7 +179,11 @@ export function calculatePayroll(input: PayrollInput): PayrollResult {
     warnings.push("No salary agreement for this month.")
   } else {
     const amount = new Decimal(salary.amount)
-    if (salary.payBasis === "MONTHLY" || salary.payBasis === "FIXED_FEE") {
+    const part = salary.payBasis === "MONTHLY" && salary.prorate && salary.prorate.days < salary.prorate.divisor ? salary.prorate : null
+    if (part) {
+      base = round(amount.mul(Math.max(0, part.days)).div(part.divisor))
+      lines.push({ source: "salary", lineType: "BASE_SALARY", description: `Base salary (${Math.max(0, part.days)}/${part.divisor} days)`, amount: base, quantity: new Decimal(Math.max(0, part.days)), rate: amount })
+    } else if (salary.payBasis === "MONTHLY" || salary.payBasis === "FIXED_FEE") {
       base = round(amount)
       lines.push({ source: "salary", lineType: "BASE_SALARY", description: salary.payBasis === "FIXED_FEE" ? "Fixed fee" : "Base salary", amount: base })
     } else {
@@ -201,7 +209,7 @@ export function calculatePayroll(input: PayrollInput): PayrollResult {
   let metric = d(kpi.actual) ?? ZERO
   let targetMet: boolean | null = null
   for (const rule of input.rules ?? []) {
-    if ((rule.metricBasis ?? "TOTAL") !== "TOTAL" && d(kpi.target) === null) {
+    if ((rule.metricBasis ?? "TOTAL") !== "TOTAL" && d(kpi.target) === null && d(kpi.actual) !== null) {
       warnings.push(`${rule.name}: KPI target not set; the whole KPI fact is used.`)
     }
     const result = evaluateRule(rule, base, kpi)
@@ -235,7 +243,7 @@ export function calculatePayroll(input: PayrollInput): PayrollResult {
 
   const manual = d(input.manualAdjustment)
   if (manual && !manual.isZero()) {
-    lines.push({ source: "manual", lineType: "ADJUSTMENT", description: "Manual adjustment", amount: round(manual) })
+    lines.push({ source: "manual", lineType: "ADJUSTMENT", description: input.manualReason || "Manual adjustment", amount: round(manual) })
   }
 
   const sum = (filter: (line: PayrollLine) => boolean) => lines.filter(filter).reduce((acc, l) => acc.add(l.amount), ZERO)

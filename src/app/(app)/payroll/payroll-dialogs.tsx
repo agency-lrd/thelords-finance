@@ -10,7 +10,7 @@ import { fill } from "@/lib/i18n/dictionaries"
 import { formatAmount, normalizeNumber, type Locale } from "@/lib/i18n/format"
 import type { SheetAdminTexts } from "@/lib/i18n/sheet-admin"
 
-import { approvalPreviewAction, approveMonthAction, carryForwardAction, carryForwardPreviewAction, confirmRowAction, editConditionsAction } from "./actions"
+import { approvalPreviewAction, approveMonthAction, reopenMonthAction, carryForwardAction, carryForwardPreviewAction, confirmRowAction, editConditionsAction } from "./actions"
 import { Panel } from "./sheet-admin"
 
 type Toast = (text: string, tone?: "ok" | "error") => void
@@ -21,6 +21,8 @@ export function ApprovalDialog({ monthKey, monthTitle, locale, t, canConfirm, to
   const P = t.payroll
   const [preview, setPreview] = useState<Preview | null>(null)
   const [comment, setComment] = useState("")
+  const [reopenReason, setReopenReason] = useState("")
+  const [reopenSure, setReopenSure] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -52,10 +54,62 @@ export function ApprovalDialog({ monthKey, monthTitle, locale, t, canConfirm, to
             <div className="rounded-xl border border-border p-3"><p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{P.employees}</p><p className="font-display text-xl font-black">{preview.employees}</p></div>
             <div className={cn("rounded-xl border p-3", preview.confirmed === preview.employees ? "border-emerald-400/40" : "border-amber-400/40")}><p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{P.confirmedCount}</p><p className="font-display text-xl font-black">{preview.confirmed} / {preview.employees}</p></div>
             <div className="col-span-2 rounded-xl border border-primary/40 p-3 sm:col-span-1">
-              <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{P.total}</p>
+              <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{P.factTotal}</p>
               {preview.totals.map((x) => <p key={x.currency} className="font-mono text-lg font-semibold">{formatAmount(x.amount, x.currency, locale)}</p>)}
+              <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{P.calculatedTotal}</p>
+              {preview.calculatedTotals.map((x) => <p key={x.currency} className="font-mono text-xs text-muted-foreground">{formatAmount(x.amount, x.currency, locale)}</p>)}
             </div>
           </div>
+          {preview.corrections.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{P.corrections}</p>
+              <ul className="flex max-h-40 flex-col divide-y divide-border/50 overflow-auto rounded-xl border border-border">
+                {preview.corrections.map((c) => (
+                  <li key={c.employeeId} className="flex flex-wrap items-center gap-x-2 px-3 py-1.5 text-sm">
+                    <span className="font-medium">{c.name}</span>
+                    <span className="font-mono text-xs">{fill(P.correctionLine, { calculated: formatAmount(c.calculated, c.currency, locale), payable: formatAmount(c.payable, c.currency, locale) })}</span>
+                    <span className="text-xs text-muted-foreground">{c.reason ?? P.noReason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {preview.reopenings.length > 0 && (
+            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em]">{P.reopenings}</p>
+              {preview.reopenings.map((v) => <p key={v.version}>{fill(P.reopening, { version: String(v.version), date: v.at.slice(0, 16).replace("T", " "), who: v.by, reason: v.reason })}</p>)}
+            </div>
+          )}
+          {preview.canReopen && (
+            <div className="flex flex-col gap-2 rounded-xl border border-amber-400/40 bg-amber-400/5 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">{P.reopenTitle}</p>
+              <p className="text-xs text-muted-foreground">{P.reopenWarning}</p>
+              <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                {P.reopenReason}
+                <Input value={reopenReason} onChange={(e) => setReopenReason(e.target.value)} maxLength={1000} className="h-8" />
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={reopenSure} onChange={(e) => setReopenSure(e.target.checked)} /> {P.reopenConfirm}
+              </label>
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  disabled={!reopenSure || reopenReason.trim().length < 3 || !!busy}
+                  onClick={async () => {
+                    setBusy("reopen")
+                    const r = await reopenMonthAction(monthKey, reopenReason)
+                    setBusy(null)
+                    if (!r.ok) return setError(r.message)
+                    toast(fill(P.reopenDone, { month: monthTitle }))
+                    onChanged()
+                    onClose()
+                  }}
+                >
+                  {busy === "reopen" ? <Loader2 className="animate-spin" /> : <AlertTriangle />} {P.reopenButton}
+                </Button>
+              </div>
+            </div>
+          )}
           {preview.approvedBy && <p className="text-sm text-emerald-300">{fill(P.approvedBy, { date: preview.approvedAt!.slice(0, 16).replace("T", " "), who: preview.approvedBy })}</p>}
           {!preview.editable && !preview.approvedBy && <p className="text-sm text-amber-300">{P.notEditable}</p>}
           {preview.editable && (
@@ -153,7 +207,7 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
   const [py, pm] = (preview?.previous ?? monthKey).split("-").map(Number)
   const prevTitle = new Date(Date.UTC(py, pm - 1, 1)).toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { month: "long", year: "numeric", timeZone: "UTC" }).replace(" г.", "")
   const count = chosen.length + addNew.size
-  const L = locale === "ru" ? { employee: "Сотрудник", department: "Отдел", since: "с" } : { employee: "Employee", department: "Department", since: "since" }
+  const L = locale === "ru" ? { employee: "Сотрудник", department: "Отдел", since: "начало работы", was: "было" } : { employee: "Employee", department: "Department", since: "started", was: "was" }
 
   return (
     <Panel title={fill(P.carryTitle, { month: prevTitle })} onClose={onClose} wide>
@@ -184,6 +238,7 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
                       <th className="px-2 py-1.5 text-right">FIX</th>
                       <th className="px-2 py-1.5 text-right">%</th>
                       <th className="px-2 py-1.5 text-right">KPI Profit</th>
+                      <th className="px-2 py-1.5 text-left">Add Terms</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -204,13 +259,16 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
                             <Select disabled={!can} value={d.departmentId} onChange={(x) => set(e.employeeId, { departmentId: x.target.value })} className="h-7 w-40 text-xs">
                               {departments.map((dep) => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
                             </Select>
+                            <p className="text-[10px] text-muted-foreground">{L.was}: {e.departmentName ?? "—"}</p>
                           </td>
-                          <td className="px-2 py-1 text-right"><Input disabled={!can} value={d.fix} onChange={(x) => set(e.employeeId, { fix: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{d.currency}</span></td>
-                          <td className="px-2 py-1 text-right">{e.model !== "NONE" ? <Input disabled={!can} value={d.ratePct} onChange={(x) => set(e.employeeId, { ratePct: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-16 text-right font-mono" /> : <span className="text-muted-foreground">—</span>}</td>
+                          <td className="px-2 py-1 text-right"><Input disabled={!can} value={d.fix} onChange={(x) => set(e.employeeId, { fix: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{L.was}: {e.fix ?? "—"} {d.currency}</span></td>
+                          <td className="px-2 py-1 text-right">{["NONE", "PCT_ABOVE_KPI", "PCT_OF_PROFIT", "PCT_IF_KPI_MET"].includes(e.model) ? <><Input disabled={!can} value={d.ratePct} onChange={(x) => set(e.employeeId, { ratePct: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-16 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{L.was}: {e.ratePct ? `${e.ratePct}%` : "—"}</span></> : <span className="text-muted-foreground">—</span>}</td>
                           <td className="px-2 py-1 text-right">
                             <Input disabled={!can} value={d.kpiTarget} onChange={(x) => set(e.employeeId, { kpiTarget: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" />
+                            <span className="text-[10px] text-muted-foreground">{L.was}: {e.previousKpi ?? "—"}</span>
                             <label className="flex items-center justify-end gap-1 text-[10px] text-muted-foreground"><input type="checkbox" disabled={!can} checked={d.kpiRecurring} onChange={(x) => set(e.employeeId, { kpiRecurring: x.target.checked })} className="accent-[var(--primary)]" /> {P.recurring}</label>
                           </td>
+                          <td className="max-w-48 px-2 py-1 text-[11px] text-muted-foreground">{e.terms ?? "—"}</td>
                         </tr>
                       )
                     })}
