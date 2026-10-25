@@ -351,7 +351,7 @@ export function FinancialSheet(props: Props) {
     const before = (last.col === "bonus" || last.col === "deduction") && last.before === "0" ? "" : last.before
     if (await saveCell(row, col, before, { quiet: true, expected: last.after, undoable: false })) {
       toast(A.undone)
-      refresh()
+      // The server action revalidates /payroll and returns the fresh sheet in the same round trip: no extra refresh.
     }
   }
 
@@ -381,12 +381,12 @@ export function FinancialSheet(props: Props) {
         return
       }
       toast(fill(target ? A.payroll.confirmed : A.payroll.unconfirmed, { name: row.name }))
-      refresh()
+      // The server action revalidates /payroll and returns the fresh sheet in the same round trip: no extra refresh.
       return
     }
     if (col.key === "teamLead") {
       await saveCell(row, col, row.isTeamLead ? "false" : "true")
-      refresh()
+      // The server action revalidates /payroll and returns the fresh sheet in the same round trip: no extra refresh.
     }
   }
 
@@ -425,7 +425,8 @@ export function FinancialSheet(props: Props) {
     then?.()
     const original = col.key === "department" ? (row.departmentId ?? "") : col.key === "status" ? row.status : raw(row, col.key)
     if (value === original) return
-    if (await saveCell(row, col, value)) refresh()
+    // Saved cells arrive fresh with the action response (revalidatePath); no second full reload.
+    await saveCell(row, col, value)
   }
 
   const selection = useMemo(() => {
@@ -846,7 +847,7 @@ export function FinancialSheet(props: Props) {
                               conditionsLabel={A.payroll.conditions}
                               inheritedLabel={A.payroll.inherited}
                               factTexts={{ reset: A.payroll.factReset, manual: A.payroll.factManual, difference: A.payroll.factDifference, days: A.payroll.prorationDays, prorated: A.payroll.prorationTip }}
-                              onResetFact={col.can && col.key === "fact" ? async () => { if (await saveCell(row, col, "")) refresh() } : undefined}
+                              onResetFact={col.can && col.key === "fact" ? async () => { await saveCell(row, col, "") } : undefined}
                               onToggle={() => toggle(row, col)}
                               onTerms={() => col.can && setTermsFor(row)}
                               onPay={() => setPayFor(row)}

@@ -4,18 +4,26 @@ import type { SessionUser } from "@/lib/auth/session"
 import { prisma, type Db } from "@/lib/data/db"
 import { Decimal } from "@/lib/money"
 
-import { accountActivity, cashBalance, cashFlowReport, requireReports } from "./ledger"
+import { accountActivity, cashAccountIds, cashBalance, cashEntriesByMonth, requireReports } from "./ledger"
 import { isoDate, previous, range, type Range } from "./periods"
-import { naturalAmount } from "./statements"
+import { buildCashFlow, naturalAmount } from "./statements"
 
 /*
  * Cash indicators and the cash forecast. Actual figures come from the ledger; obligations from open
  * balances (receivables, payables, payroll payable); the forecast is clearly separate and labelled.
  */
 
-const SUBTYPE_BALANCE = async (db: Db, org: string, asOf: Date, subtypes: string[]) => {
-  const activity = await accountActivity(db, org, null, asOf)
-  return activity.filter((a) => subtypes.includes(a.subtype)).reduce((acc, a) => acc.add(naturalAmount(a)), new Decimal(0))
+/** Operating (and investing) cash flow of the `count` complete months before `asOf`, from one query. */
+async function recentFlows(db: Db, org: string, asOf: Date, count = 3) {
+  const months: Range[] = []
+  let r: Range = previous(range("month", asOf.getUTCFullYear(), asOf.getUTCMonth() + 1))
+  for (let i = 0; i < count; i++) {
+    months.push(r)
+    r = previous(r)
+  }
+  const cashIds = await cashAccountIds(db, org)
+  const entriesOf = await cashEntriesByMonth(db, org, months[months.length - 1].from, months[0].to)
+  return months.map((m) => buildCashFlow(0, entriesOf(m.key), (id) => cashIds.has(id)))
 }
 
 export async function cashIndicators(user: SessionUser, asOf: Date, db: Db = prisma) {
@@ -23,21 +31,18 @@ export async function cashIndicators(user: SessionUser, asOf: Date, db: Db = pri
   const org = user.organizationId
   const today = new Date(new Date().toISOString().slice(0, 10))
   const cash = new Decimal(await cashBalance(db, org, asOf))
-  const receivables = await SUBTYPE_BALANCE(db, org, asOf, ["RECEIVABLE"])
-  const payables = await SUBTYPE_BALANCE(db, org, asOf, ["PAYABLE", "ACCRUED_LIABILITY"])
-  const payrollPayable = await SUBTYPE_BALANCE(db, org, asOf, ["PAYROLL_LIABILITY"])
-  const taxes = await SUBTYPE_BALANCE(db, org, asOf, ["TAX_LIABILITY"])
-  const distributionsPayable = await SUBTYPE_BALANCE(db, org, asOf, ["DISTRIBUTIONS_PAYABLE"])
+  // One balance scan for every open-balance indicator (was one full scan per indicator).
+  const activity = await accountActivity(db, org, null, asOf)
+  const balance = (subtypes: string[]) => activity.filter((a) => subtypes.includes(a.subtype)).reduce((acc, a) => acc.add(naturalAmount(a)), new Decimal(0))
+  const receivables = balance(["RECEIVABLE"])
+  const payables = balance(["PAYABLE", "ACCRUED_LIABILITY"])
+  const payrollPayable = balance(["PAYROLL_LIABILITY"])
+  const taxes = balance(["TAX_LIABILITY"])
+  const distributionsPayable = balance(["DISTRIBUTIONS_PAYABLE"])
 
   // Burn: average net cash outflow of the last three complete months (operating + investing).
-  const asOfMonth = range("month", asOf.getUTCFullYear(), asOf.getUTCMonth() + 1)
-  let r: Range = previous(asOfMonth)
-  const flows: Decimal[] = []
-  for (let i = 0; i < 3; i++) {
-    const { flow } = await cashFlowReport(user, r, db)
-    flows.push(new Decimal(flow.operating).add(flow.investing))
-    r = previous(r)
-  }
+  const recent = await recentFlows(db, org, asOf)
+  const flows = recent.map((flow) => new Decimal(flow.operating).add(flow.investing))
   const avg = flows.reduce((a, f) => a.add(f), new Decimal(0)).div(3)
   const burn = avg.isNegative() ? avg.abs() : new Decimal(0)
   const runwayMonths = burn.isZero() ? null : cash.div(burn).toDecimalPlaces(1).toString()
@@ -68,6 +73,8 @@ export async function cashIndicators(user: SessionUser, asOf: Date, db: Db = pri
     runwayMonths,
     overdueReceivables: overdueReceivables.toDecimalPlaces(2).toString(),
     overduePayables: overduePayables.toDecimalPlaces(2).toString(),
+    /** Operating cash flow of the last three complete months (reused by the forecast). */
+    recentOperating: recent.map((flow) => flow.operating),
   }
 }
 
@@ -79,16 +86,12 @@ export type ForecastScenario = "CONSERVATIVE" | "BASE" | "AGGRESSIVE"
  * operating flow adjusted by the scenario (-20% / 0 / +20% of its size). The first month also collects
  * open receivables and pays open payables and payroll. Forecast only: never mixed with actuals.
  */
-export async function cashForecast(user: SessionUser, from: Date, months = 3, db: Db = prisma) {
+export async function cashForecast(user: SessionUser, from: Date, months = 3, db: Db = prisma, indicators?: Awaited<ReturnType<typeof cashIndicators>>) {
   requireReports(user)
-  const ind = await cashIndicators(user, from, db)
+  // Reuse indicators already computed for the same date (the dashboard does) instead of recomputing.
+  const ind = indicators ?? (await cashIndicators(user, from, db))
   const asOfMonth = range("month", from.getUTCFullYear(), from.getUTCMonth() + 1)
-  let r: Range = previous(asOfMonth)
-  const ops: Decimal[] = []
-  for (let i = 0; i < 3; i++) {
-    ops.push(new Decimal((await cashFlowReport(user, r, db)).flow.operating))
-    r = previous(r)
-  }
+  const ops = ind.recentOperating.map((v) => new Decimal(v))
   const avg = ops.reduce((a, x) => a.add(x), new Decimal(0)).div(3)
   const budgets = await db.budgetLine.findMany({
     where: { organizationId: user.organizationId, metric: { in: ["REVENUE", "DIRECT_COSTS", "OPEX"] }, departmentId: null, projectId: null },

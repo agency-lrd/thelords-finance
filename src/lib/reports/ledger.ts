@@ -87,6 +87,30 @@ export async function cashEntries(db: Db, organizationId: string, from: Date, to
   return [...entries.values()].map((lines) => ({ lines }))
 }
 
+/** Like cashEntries for a longer span, grouped by calendar month ("YYYY-MM"): one query instead of one per month. */
+export async function cashEntriesByMonth(db: Db, organizationId: string, from: Date, to: Date) {
+  const rows = await db.$queryRaw<{ entry_id: string; ym: string; account_id: string; type: EntryLine["type"]; subtype: string; debit: string; credit: string }[]>`
+    SELECT l.journal_entry_id AS entry_id, to_char(e.entry_date, 'YYYY-MM') AS ym, a.id AS account_id, a.type::text AS type, a.subtype::text AS subtype, l.debit::text AS debit, l.credit::text AS credit
+    FROM journal_lines l
+    JOIN journal_entries e ON e.id = l.journal_entry_id
+    JOIN ledger_accounts a ON a.id = l.ledger_account_id
+    WHERE e.organization_id = ${organizationId}::uuid AND e.status::text = ANY(${POSTED})
+      AND e.entry_date BETWEEN ${isoDate(from)}::date AND ${isoDate(to)}::date
+      AND EXISTS (
+        SELECT 1 FROM journal_lines cl JOIN ledger_accounts ca ON ca.id = cl.ledger_account_id
+        WHERE cl.journal_entry_id = e.id AND ca.type = 'ASSET' AND ca.subtype = 'CASH'
+      )`
+  const byMonth = new Map<string, Map<string, EntryLine[]>>()
+  for (const r of rows) {
+    const entries = byMonth.get(r.ym) ?? new Map<string, EntryLine[]>()
+    const lines = entries.get(r.entry_id) ?? []
+    lines.push({ accountId: r.account_id, type: r.type, subtype: r.subtype, debit: r.debit, credit: r.credit })
+    entries.set(r.entry_id, lines)
+    byMonth.set(r.ym, entries)
+  }
+  return (key: string) => [...(byMonth.get(key)?.values() ?? [])].map((lines) => ({ lines }))
+}
+
 /** Total of all cash accounts at the end of a date (inclusive). */
 export async function cashBalance(db: Db, organizationId: string, asOf: Date) {
   const [row] = await db.$queryRaw<{ v: string | null }[]>`
@@ -99,7 +123,7 @@ export async function cashBalance(db: Db, organizationId: string, asOf: Date) {
   return new Decimal(row?.v ?? 0).toString()
 }
 
-async function cashAccountIds(db: Db, organizationId: string) {
+export async function cashAccountIds(db: Db, organizationId: string) {
   const accounts = await db.ledgerAccount.findMany({ where: { organizationId, type: "ASSET", subtype: "CASH" }, select: { id: true } })
   return new Set(accounts.map((a) => a.id))
 }
@@ -149,10 +173,11 @@ export async function monthlySeries(user: SessionUser, year: number, filters: Re
   const cashIds = await cashAccountIds(db, user.organizationId)
   const months = monthsOf(year)
   let opening = await cashBalance(db, user.organizationId, dayBefore(months[0].from))
+  const entriesOf = await cashEntriesByMonth(db, user.organizationId, months[0].from, months[months.length - 1].to)
   const out = []
   for (const m of months) {
     const pnl = buildPnl(activity.get(m.index) ?? [])
-    const flow = buildCashFlow(opening, await cashEntries(db, user.organizationId, m.from, m.to), (id) => cashIds.has(id))
+    const flow = buildCashFlow(opening, entriesOf(m.key), (id) => cashIds.has(id))
     out.push({ month: m.index, key: m.key, pnl, flow })
     // Closing balance of one month is the opening balance of the next.
     opening = flow.closingCash
@@ -203,9 +228,19 @@ export async function drillDown(user: SessionUser, accountId: string, r: Range, 
 export async function departmentPnl(user: SessionUser, r: Range, db: Db = prisma) {
   requireReports(user)
   const departments = await db.department.findMany({ where: { organizationId: user.organizationId }, orderBy: { name: "asc" } })
+  // One grouped query for every department (was one query per department).
+  const grouped = await db.$queryRaw<(ActivityRow & { department_id: string })[]>`
+    SELECT l.department_id, a.id AS account_id, a.code, a.name, a.type::text AS type, a.subtype::text AS subtype, a.cash_flow_activity::text AS cash_flow_activity,
+           coalesce(sum(l.debit), 0)::text AS debit, coalesce(sum(l.credit), 0)::text AS credit
+    FROM journal_lines l
+    JOIN journal_entries e ON e.id = l.journal_entry_id
+    JOIN ledger_accounts a ON a.id = l.ledger_account_id
+    WHERE e.organization_id = ${user.organizationId}::uuid AND e.status::text = ANY(${POSTED})
+      AND e.entry_date BETWEEN ${isoDate(r.from)}::date AND ${isoDate(r.to)}::date AND l.department_id IS NOT NULL
+    GROUP BY l.department_id, a.id`
   const rows = []
   for (const d of departments) {
-    const pnl = buildPnl(await accountActivity(db, user.organizationId, r.from, r.to, { departmentId: d.id }))
+    const pnl = buildPnl(grouped.filter((g) => g.department_id === d.id).map((g) => ({ accountId: g.account_id, code: g.code, name: g.name, type: g.type, subtype: g.subtype, cashFlowActivity: g.cash_flow_activity, debit: g.debit, credit: g.credit })))
     if (pnl.revenue === "0" && pnl.totalExpenses === "0") continue
     rows.push({ id: d.id, name: d.name, archived: !!d.archivedAt, pnl })
   }

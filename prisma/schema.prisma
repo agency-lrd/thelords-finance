@@ -1668,6 +1668,7 @@ model JournalLine {
   @@index([ledgerAccountId])
   @@index([projectId])
   @@index([departmentId])
+  @@index([clientId])
   @@map("journal_lines")
 }
 
@@ -1849,6 +1850,9 @@ model Transaction {
   @@index([organizationId, kind])
   @@index([shareholderId])
   @@index([clientId])
+  @@index([departmentId])
+  @@index([categoryId])
+  @@index([organizationId, status, date])
   @@map("transactions")
 }
 

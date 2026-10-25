@@ -17,16 +17,17 @@ export async function executiveDashboard(user: SessionUser, r: Range, db: Db = p
   requireReports(user)
   const today = new Date(new Date().toISOString().slice(0, 10))
   const asOf = r.to < today ? r.to : today
+  const indicatorsPromise = cashIndicators(user, asOf, db)
   const [pnl, indicators, budget, series, departments, clients, expenses, bs, forecast, cash] = await Promise.all([
     pnlReport(user, r, {}, db),
-    cashIndicators(user, asOf, db),
+    indicatorsPromise,
     budgetForRange(user, r, {}, db),
     monthlySeries(user, r.year, {}, db),
     departmentPnl(user, r, db),
     clientProfitability(user, r, db),
     expenseStructure(user, r, db),
     balanceSheetReport(user, asOf, db),
-    cashForecast(user, today, 3, db),
+    asOf.getTime() === today.getTime() ? indicatorsPromise.then((ind) => cashForecast(user, today, 3, db, ind)) : cashForecast(user, today, 3, db),
     cashFlowReport(user, r, db),
   ])
 
