@@ -7,7 +7,7 @@ import { Decimal } from "@/lib/money"
 
 import { clientProfitability, expenseStructure } from "./analytics"
 import { cashForecast, cashIndicators } from "./cash"
-import { balanceSheetReport, departmentPnl, monthlySeries, pnlReport, requireReports } from "./ledger"
+import { balanceSheetReport, cashFlowReport, departmentPnl, monthlySeries, pnlReport, requireReports } from "./ledger"
 import { isoDate, type Range } from "./periods"
 
 export type Risk = { key: string; level: "high" | "medium"; value: string | null; href: string }
@@ -17,7 +17,7 @@ export async function executiveDashboard(user: SessionUser, r: Range, db: Db = p
   requireReports(user)
   const today = new Date(new Date().toISOString().slice(0, 10))
   const asOf = r.to < today ? r.to : today
-  const [pnl, indicators, budget, series, departments, clients, expenses, bs, forecast] = await Promise.all([
+  const [pnl, indicators, budget, series, departments, clients, expenses, bs, forecast, cash] = await Promise.all([
     pnlReport(user, r, {}, db),
     cashIndicators(user, asOf, db),
     budgetForRange(user, r, {}, db),
@@ -27,6 +27,7 @@ export async function executiveDashboard(user: SessionUser, r: Range, db: Db = p
     expenseStructure(user, r, db),
     balanceSheetReport(user, asOf, db),
     cashForecast(user, today, 3, db),
+    cashFlowReport(user, r, db),
   ])
 
   // Managed client budgets (turnover): manual monthly KPI, summed over the period.
@@ -87,10 +88,9 @@ export async function executiveDashboard(user: SessionUser, r: Range, db: Db = p
   if (reserve && new Decimal(indicators.cash).lt(reserve)) risks.push({ key: "reserve", level: "high", value: new Decimal(indicators.cash).sub(reserve).toString(), href: "/cash-flow" })
   if (forecast.scenarios.BASE.some((m) => new Decimal(m.closing).isNegative())) risks.push({ key: "forecast", level: "high", value: null, href: "/cash-flow" })
   if (new Decimal(current.netProfit).isNegative()) risks.push({ key: "loss", level: "medium", value: current.netProfit, href: "/pnl" })
-  if (indicators.overdueReceivables !== "0") risks.push({ key: "overdueReceivables", level: "medium", value: indicators.overdueReceivables, href: "/cash-flow" })
-  if (indicators.overduePayables !== "0") risks.push({ key: "overduePayables", level: "medium", value: indicators.overduePayables, href: "/cash-flow" })
   if (opexBudget && new Decimal(current.operatingExpenses).gt(opexBudget)) risks.push({ key: "opexOverBudget", level: "medium", value: new Decimal(current.operatingExpenses).sub(opexBudget).toString(), href: "/budgets" })
-  if (!bs.sheet.balanced) risks.push({ key: "unbalanced", level: "high", value: bs.sheet.difference, href: "/balance-sheet" })
+  // Ledger integrity is checked internally; the owner sees the warning, not the balance sheet.
+  if (!bs.sheet.balanced) risks.push({ key: "unbalanced", level: "high", value: bs.sheet.difference, href: "/transactions" })
 
   return {
     range: { key: r.key, from: isoDate(r.from), to: isoDate(r.to) },
@@ -98,6 +98,7 @@ export async function executiveDashboard(user: SessionUser, r: Range, db: Db = p
     previous: pnl.previous,
     managedBudget,
     indicators,
+    cash: { opening: cash.flow.openingCash, inflow: cash.flow.inflow, outflow: cash.flow.outflow, closing: cash.flow.closingCash },
     target,
     budget: {
       revenue: budget.metric("REVENUE"),

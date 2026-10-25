@@ -18,6 +18,7 @@ import { buildPnl } from "./statements"
  */
 
 export const MANUAL_KPIS = ["CLIENT_NPS", "EMPLOYEE_NPS", "MANAGED_BUDGET"] as const
+export const HIDDEN_KPIS = ["CLIENT_NPS", "EMPLOYEE_NPS"]
 const SYSTEM_KPIS = ["PROFIT", ...MANUAL_KPIS]
 
 type MonthValue = string | null
@@ -53,34 +54,45 @@ export async function monthlyAnalytics(user: SessionUser, year: number, db: Db =
     if (!firstRevenue.has(r.client_id) || firstRevenue.get(r.client_id)! > index) firstRevenue.set(r.client_id, index)
   }
 
-  // Employees: on the payroll that month (confirmed payslips), else employed that month.
+  // Employees: DISTINCT people on the month's financial sheet (its roster), by the sheet's own rule:
+  // archived people count only in months where they have a payslip. Never all profiles ever created,
+  // and never payslips or snapshots counted as separate people.
+  const roster = await db.$queryRaw<{ month: number; n: number }[]>`
+    SELECT p.month::int AS month, count(DISTINCT m.employee_id)::int AS n
+    FROM payroll_month_employees m
+    JOIN financial_periods p ON p.id = m.period_id
+    JOIN employees e ON e.id = m.employee_id
+    WHERE m.organization_id = ${org}::uuid AND p.year = ${year}
+      AND (e.archived_at IS NULL OR EXISTS (
+        SELECT 1 FROM payroll_items i JOIN payroll_runs r ON r.id = i.payroll_run_id
+        WHERE r.period_id = p.id AND r.status <> 'CANCELLED' AND i.employee_id = e.id))
+    GROUP BY 1`
+  const headcount = new Map(roster.map((r) => [r.month, r.n]))
   const payslips = await db.$queryRaw<{ month: number; n: number; gross: string }[]>`
-    SELECT p.month::int AS month, count(*)::int AS n, sum(round(i.gross_amount * i.fx_rate_to_base, 8))::text AS gross
+    SELECT p.month::int AS month, count(DISTINCT i.employee_id)::int AS n, sum(round(i.gross_amount * i.fx_rate_to_base, 8))::text AS gross
     FROM payroll_items i JOIN payroll_runs r ON r.id = i.payroll_run_id JOIN financial_periods p ON p.id = r.period_id
     WHERE r.organization_id = ${org}::uuid AND p.year = ${year} AND r.status <> 'CANCELLED' AND i.confirmed_at IS NOT NULL
     GROUP BY 1`
   const slips = new Map(payslips.map((p) => [p.month, p]))
-  const employees = await db.employee.findMany({ where: { organizationId: org }, select: { hireDate: true, terminationDate: true } })
 
   // Manual KPIs (organization scope).
-  const definitions = await db.kpiDefinition.findMany({ where: { organizationId: org, archivedAt: null, code: { not: "PROFIT" } }, orderBy: { createdAt: "asc" } })
+  // NPS scores are no longer shown (no reliable source); their stored values are kept, not deleted.
+  const definitions = await db.kpiDefinition.findMany({ where: { organizationId: org, archivedAt: null, code: { notIn: ["PROFIT", ...HIDDEN_KPIS] } }, orderBy: { createdAt: "asc" } })
   const actuals = await db.kpiActual.findMany({ where: { organizationId: org, scope: "ORGANIZATION", period: { year } }, include: { period: { select: { month: true } } } })
   const kpi = (definitionId: string, month: number) => actuals.find((a) => a.kpiDefinitionId === definitionId && a.period.month === month)?.actualValue.toString() ?? null
 
   const months = series.map((s) => {
     const m = s.month
     const end = new Date(Date.UTC(year, m, 0))
-    const start = new Date(Date.UTC(year, m - 1, 1))
     const index = year * 12 + m
     const marketing = marketingAccount ? (s.pnl.sections.operatingExpenses.lines.find((l) => l.accountId === marketingAccount)?.amount ?? "0") : "0"
     const slip = slips.get(m)
-    const employed = employees.filter((e) => e.hireDate <= end && (!e.terminationDate || e.terminationDate >= start)).length
     return {
       month: m,
       clients: clients.filter((c) => c.createdAt <= end).length,
       newClients: [...firstRevenue.values()].filter((v) => v === index).length,
       activeClients: revenueByClient.filter((r) => r.year === year && r.month === m).length,
-      employees: slip?.n ?? employed,
+      employees: headcount.get(m) ?? slip?.n ?? 0,
       avgSalary: slip && slip.n > 0 ? new Decimal(slip.gross).div(slip.n).toDecimalPlaces(2).toString() : null,
       revenue: s.pnl.revenue,
       grossProfit: s.pnl.grossProfit,
@@ -165,4 +177,62 @@ export async function expenseStructure(user: SessionUser, r: Range, db: Db = pri
   return [pnl.sections.costOfServices, pnl.sections.operatingExpenses, pnl.sections.depreciation, pnl.sections.amortization, pnl.sections.otherExpense, pnl.sections.incomeTax]
     .flatMap((s) => s.lines)
     .sort((a, b) => Number(b.amount) - Number(a.amount))
+}
+
+/**
+ * One month per department and per team, with the previous month for the change: revenue, direct
+ * costs, payroll (approved payroll accrual), gross profit and margin. Department figures come from the
+ * ledger (each cost once, on its department); team figures from confirmed team income/costs and the
+ * approved payslips of team members, which are part of their department's figures, not extra.
+ */
+export async function departmentAnalytics(user: SessionUser, m: { year: number; month: number }, db: Db = prisma) {
+  requireReports(user)
+  const org = user.organizationId
+  const prev = m.month === 1 ? { year: m.year - 1, month: 12 } : { year: m.year, month: m.month - 1 }
+  const from = `${prev.year}-${String(prev.month).padStart(2, "0")}-01`
+  const to = isoDate(new Date(Date.UTC(m.year, m.month, 0)))
+  const rows = await db.$queryRaw<{ department_id: string; ym: string; revenue: string; direct: string; payroll: string; opex: string }[]>`
+    SELECT l.department_id, to_char(e.entry_date, 'YYYY-MM') AS ym,
+      coalesce(sum(CASE WHEN a.subtype = 'OPERATING_REVENUE' THEN l.credit - l.debit END), 0)::text AS revenue,
+      coalesce(sum(CASE WHEN a.subtype = 'COST_OF_SALES' THEN l.debit - l.credit END), 0)::text AS direct,
+      coalesce(sum(CASE WHEN e.source = 'PAYROLL' AND a.type = 'EXPENSE' THEN l.debit - l.credit END), 0)::text AS payroll,
+      coalesce(sum(CASE WHEN a.subtype = 'OPERATING_EXPENSE' THEN l.debit - l.credit END), 0)::text AS opex
+    FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_entry_id JOIN ledger_accounts a ON a.id = l.ledger_account_id
+    WHERE e.organization_id = ${org}::uuid AND e.status::text IN ('POSTED', 'REVERSED') AND l.department_id IS NOT NULL
+      AND e.entry_date BETWEEN ${from}::date AND ${to}::date
+    GROUP BY 1, 2`
+  const departments = await db.department.findMany({ where: { organizationId: org }, select: { id: true, name: true, archivedAt: true } })
+  const key = (x: { year: number; month: number }) => `${x.year}-${String(x.month).padStart(2, "0")}`
+  const figures = (id: string, ym: string) => {
+    const r = rows.find((x) => x.department_id === id && x.ym === ym)
+    const revenue = new Decimal(r?.revenue ?? 0)
+    const direct = new Decimal(r?.direct ?? 0)
+    const gross = revenue.sub(direct)
+    return { revenue: revenue.toString(), direct: direct.toString(), payroll: new Decimal(r?.payroll ?? 0).toString(), opex: new Decimal(r?.opex ?? 0).toString(), gross: gross.toString(), margin: revenue.isZero() ? null : gross.div(revenue).mul(100).toFixed(1) }
+  }
+  const byDepartment = departments
+    .map((d) => ({ id: d.id, name: d.name, current: figures(d.id, key(m)), previous: figures(d.id, key(prev)) }))
+    .filter((d) => [d.current, d.previous].some((f) => f.revenue !== "0" || f.direct !== "0" || f.payroll !== "0" || f.opex !== "0"))
+
+  const teams = await db.team.findMany({ where: { department: { organizationId: org } }, include: { department: { select: { name: true } } }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] })
+  const teamMonth = async (x: { year: number; month: number }) => {
+    const period = { organizationId: org, year: x.year, month: x.month }
+    const [income, costs, pay] = [
+      await db.projectIncome.groupBy({ by: ["teamId"], where: { period, teamId: { not: null }, journalEntryId: { not: null } }, _sum: { baseAmount: true } }),
+      await db.projectCost.groupBy({ by: ["teamId"], where: { period, teamId: { not: null }, journalEntryId: { not: null } }, _sum: { baseAmount: true } }),
+      await db.payrollItem.findMany({ where: { teamId: { not: null }, payrollRun: { period, status: { in: ["APPROVED", "PAYING", "PAID"] } } }, select: { teamId: true, baseNetAmount: true } }),
+    ]
+    return (teamId: string) => {
+      const revenue = new Decimal(income.find((i) => i.teamId === teamId)?._sum.baseAmount ?? 0)
+      const direct = new Decimal(costs.find((c) => c.teamId === teamId)?._sum.baseAmount ?? 0)
+      const payroll = pay.filter((p) => p.teamId === teamId).reduce((a, p) => a.add(new Decimal(p.baseNetAmount)), new Decimal(0))
+      const gross = revenue.sub(direct).sub(payroll)
+      return { revenue: revenue.toString(), direct: direct.toString(), payroll: payroll.toString(), opex: "0", gross: gross.toString(), margin: revenue.isZero() ? null : gross.div(revenue).mul(100).toFixed(1) }
+    }
+  }
+  const [cur, before] = [await teamMonth(m), await teamMonth(prev)]
+  const byTeam = teams
+    .map((t) => ({ id: t.id, name: t.name, department: t.department.name, archived: !!t.archivedAt, current: cur(t.id), previous: before(t.id) }))
+    .filter((t) => !t.archived || [t.current, t.previous].some((f) => f.revenue !== "0" || f.direct !== "0"))
+  return { month: key(m), previous: key(prev), departments: byDepartment, teams: byTeam }
 }

@@ -6,7 +6,15 @@ import { cn } from "cn"
 import { InfoTip } from "@/components/reports/info"
 import { ReportHeader } from "@/components/reports/report-header"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
-import { requirePageAccess } from "@/lib/auth/session"
+import Link from "next/link"
+
+import { GapsPanel } from "@/components/reports/gaps-panel"
+import { can, requirePageAccess } from "@/lib/auth/session"
+import { transactionOptions } from "@/lib/data/transactions"
+import { accountBalances, reportGaps } from "@/lib/reports/gaps"
+import { isoDate } from "@/lib/reports/periods"
+
+import { RecordMovementButton } from "./record-button"
 import { budgetForRange } from "@/lib/data/budgets"
 import { formatAmount } from "@/lib/i18n/format"
 import { fill } from "@/lib/i18n/dictionaries"
@@ -35,12 +43,18 @@ async function CashFlow({ searchParams }: { searchParams: PageProps<"/cash-flow"
   const { range, period } = reportParams(await searchParams)
   const today = new Date(new Date().toISOString().slice(0, 10))
   const asOf = range.to < today ? range.to : today
-  const [{ flow, actualClosing, reconciled }, indicators, forecast, budget] = await Promise.all([
+  const canRecord = can(user, "journal:create")
+  const [{ flow, actualClosing, reconciled }, indicators, forecast, budget, gaps, balances, options] = await Promise.all([
     cashFlowReport(user, range),
     cashIndicators(user, asOf),
     cashForecast(user, today, 3),
     budgetForRange(user, range),
+    reportGaps(user, range),
+    accountBalances(user, range.to),
+    canRecord ? transactionOptions(user) : Promise.resolve(null),
   ])
+  // Lines that never apply to this business are hidden unless they actually have movements.
+  const RARE: CashLineKey[] = ["equipmentPurchases", "assetSales", "investments", "otherFinancing", "clientBudgets"]
   const money = (v: string | null) => (v === null ? "—" : formatAmount(v, user.baseCurrency, locale))
   const minimum = budget.metric("CASH_RESERVE")
   const surplus = minimum ? new Decimal(flow.closingCash).sub(minimum).toString() : null
@@ -50,7 +64,7 @@ async function CashFlow({ searchParams }: { searchParams: PageProps<"/cash-flow"
       <tr className="border-t border-border/60">
         <td className="px-4 pt-4 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary" colSpan={2}>{title}</td>
       </tr>
-      {(Object.keys(CASH_ACTIVITY) as CashLineKey[]).filter((k) => CASH_ACTIVITY[k] === activity).map((k) => (
+      {(Object.keys(CASH_ACTIVITY) as CashLineKey[]).filter((k) => CASH_ACTIVITY[k] === activity && !(RARE.includes(k) && flow.lines[k] === "0")).map((k) => (
         <tr key={k}>
           <td className="py-1.5 pr-4 pl-8 text-foreground/85">{t.cf[k]}</td>
           <td className={cn("px-4 py-1.5 text-right font-mono", flow.lines[k] === "0" && "text-muted-foreground/60")}>{money(flow.lines[k])}</td>
@@ -73,6 +87,39 @@ async function CashFlow({ searchParams }: { searchParams: PageProps<"/cash-flow"
   return (
     <div className="flex flex-col gap-8">
       <ReportHeader title={t.cf.title} description={t.cf.description} period={period} />
+
+      {/* The most important figure: money left at the end of the month. */}
+      <section className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+        <div className="flex flex-col gap-3 rounded-2xl border border-primary/40 bg-[#1d0b17] p-5">
+          <p className="text-[11px] uppercase tracking-[0.16em] text-primary">{locale === "ru" ? "Остаток денег на конец периода" : "Cash at the end of the period"}</p>
+          <p className="font-display text-4xl font-black">{money(flow.closingCash)}</p>
+          <p className="font-mono text-xs text-muted-foreground">
+            {money(flow.openingCash)} + {money(flow.inflow)} − {money(flow.outflow)} = {money(flow.closingCash)}
+          </p>
+          <p className="text-[11px] text-muted-foreground">{locale === "ru" ? "Остаток на начало + поступления − выплаты. Только реально проведённые движения денег; переводы между своими счетами не считаются. Конец месяца становится началом следующего." : "Opening + money in − money out. Only posted money movements; transfers between own accounts are excluded. A month's closing is the next month's opening."}</p>
+          <div className="flex flex-wrap items-center gap-3">
+            {options && <RecordMovementButton locale={locale} options={{ ...options, accounts: options.accounts.filter((a) => a.type !== "LOAN" && a.type !== "CREDIT_CARD") }} canPaySalary={can(user, "payroll:pay")} />}
+            <Link href={`/transactions?from=${isoDate(range.from)}&to=${isoDate(range.to)}`} className="text-xs text-primary hover:underline">{locale === "ru" ? "Все движения за период →" : "All movements in the period →"}</Link>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-2xl bg-card/50 ring-1 ring-foreground/10">
+          <p className="px-4 pt-4 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{locale === "ru" ? "Остатки по счетам и кошелькам" : "Balance by account and wallet"}</p>
+          <table className="w-full text-sm">
+            <tbody>
+              {balances.length === 0 && <tr><td className="px-4 py-4 text-muted-foreground">{locale === "ru" ? "Нет счетов. Добавьте счёт или кошелёк на странице «Счета»." : "No accounts yet."}</td></tr>}
+              {balances.map((b) => (
+                <tr key={b.id} className="border-t border-border/40">
+                  <td className="px-4 py-2">{b.name} <span className="text-[11px] text-muted-foreground">{b.currency}</span></td>
+                  <td className={cn("px-4 py-2 text-right font-mono", new Decimal(b.balance).isNegative() && "text-red-300")}>{money(b.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="px-4 py-2 text-[10px] text-muted-foreground">{locale === "ru" ? `Суммы в ${user.baseCurrency} по курсу каждой операции; валюта счёта указана рядом. Разные валюты не складываются без курса.` : `Amounts in ${user.baseCurrency} at each entry's rate; the account currency is shown next to it.`}</p>
+        </div>
+      </section>
+
+      <GapsPanel gaps={gaps} locale={locale} currency={user.baseCurrency} focus="cash" />
       <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr]">
         <div className="overflow-hidden rounded-2xl bg-card/50 ring-1 ring-foreground/10">
           <table className="w-full text-sm">
@@ -82,7 +129,7 @@ async function CashFlow({ searchParams }: { searchParams: PageProps<"/cash-flow"
                 <td className="px-4 py-3 text-right font-mono font-semibold">{money(flow.openingCash)}</td>
               </tr>
               {group({ activity: "operating", title: t.cf.operating })}
-              {group({ activity: "investing", title: t.cf.investing })}
+              {(flow.investing !== "0") && group({ activity: "investing", title: t.cf.investing })}
               {group({ activity: "financing", title: t.cf.financing })}
               <tr className="border-t border-border">
                 <td className="px-4 py-2.5 font-medium">{t.cf.netChange}</td>
@@ -119,10 +166,7 @@ async function CashFlow({ searchParams }: { searchParams: PageProps<"/cash-flow"
               {stat({ label: t.cf.burn, value: indicators.burn === "0" ? t.cf.noBurn : money(indicators.burn) })}
               {stat({ label: t.cf.runway, value: indicators.runwayMonths ? `${indicators.runwayMonths} ${t.cf.months}` : "—", tone: indicators.runwayMonths && Number(indicators.runwayMonths) < 3 ? "warn" : undefined })}
               {stat({ label: t.cf.upcomingPayroll, value: money(indicators.payrollPayable), info: t.metrics.payrollObligations[1] })}
-              {stat({ label: t.cf.upcomingExpenses, value: money(indicators.payables), info: t.metrics.payables[1] })}
-              {stat({ label: t.cf.expectedReceipts, value: money(indicators.receivables), info: t.metrics.receivables[1] })}
-              {stat({ label: t.cf.overdueReceivables, value: money(indicators.overdueReceivables), tone: indicators.overdueReceivables !== "0" ? "warn" : undefined })}
-              {stat({ label: t.cf.overduePayables, value: money(indicators.overduePayables), tone: indicators.overduePayables !== "0" ? "warn" : undefined })}
+
             </div>
           </div>
           <div className="rounded-2xl border border-dashed border-primary/40 p-5">

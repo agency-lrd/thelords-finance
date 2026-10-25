@@ -4,11 +4,12 @@ import { Suspense } from "react"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { can, requirePageAccess } from "@/lib/auth/session"
 import { getDictionary } from "@/lib/i18n/server"
-import { expenseStructure, monthlyAnalytics } from "@/lib/reports/analytics"
+import { departmentAnalytics, expenseStructure, monthlyAnalytics } from "@/lib/reports/analytics"
 import { departmentPnl } from "@/lib/reports/ledger"
-import { range } from "@/lib/reports/periods"
+import { parseRange, range } from "@/lib/reports/periods"
 
 import { AnalyticsView } from "./analytics-view"
+import { DepartmentAnalytics } from "./department-analytics"
 
 export const metadata: Metadata = { title: "Аналитика" }
 
@@ -26,8 +27,12 @@ async function Analytics({ searchParams }: { searchParams: PageProps<"/analytics
   const params = await searchParams
   const y = typeof params.year === "string" && /^\d{4}$/.test(params.year) ? Number(params.year) : new Date().getUTCFullYear()
   const year = Math.min(2100, Math.max(2000, y))
-  const [data, departments, costs] = await Promise.all([monthlyAnalytics(user, year), departmentPnl(user, range("year", year)), expenseStructure(user, range("year", year))])
+  const now = new Date()
+  const m = parseRange(typeof params.m === "string" ? params.m : null, range("month", now.getUTCFullYear(), now.getUTCMonth() + 1))
+  const month = m.kind === "month" ? { year: m.year, month: m.index } : { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 }
+  const [data, departments, costs, byDepartment] = await Promise.all([monthlyAnalytics(user, year), departmentPnl(user, range("year", year)), expenseStructure(user, range("year", year)), departmentAnalytics(user, month)])
   return (
+    <>
     <AnalyticsView
       locale={locale}
       currency={user.baseCurrency}
@@ -36,5 +41,9 @@ async function Analytics({ searchParams }: { searchParams: PageProps<"/analytics
       costStructure={costs.map((c) => ({ name: c.name, amount: c.amount }))}
       canEdit={can(user, "kpi:manage")}
     />
+    <div className="mt-10">
+      <DepartmentAnalytics locale={locale} currency={user.baseCurrency} data={byDepartment} />
+    </div>
+    </>
   )
 }

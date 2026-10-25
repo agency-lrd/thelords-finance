@@ -11,6 +11,10 @@ import { reportTexts } from "@/lib/i18n/reports"
 import { pnlReport } from "@/lib/reports/ledger"
 import { reportParams } from "@/lib/reports/params"
 
+import { GapsPanel } from "@/components/reports/gaps-panel"
+import { directionGross, reportGaps } from "@/lib/reports/gaps"
+
+import { DirectionGross } from "./direction-gross"
 import { PnlStatement } from "./statement"
 
 export const metadata: Metadata = { title: "P&L" }
@@ -29,11 +33,13 @@ async function Pnl({ searchParams }: { searchParams: PageProps<"/pnl">["searchPa
   const t = reportTexts[locale]
   const { range, period, departmentId, clientId } = reportParams(await searchParams)
   const filters = { departmentId, clientId }
-  const [report, budget, departments, clients] = await Promise.all([
+  const [report, budget, departments, clients, gaps, directions] = await Promise.all([
     pnlReport(user, range, filters),
     budgetForRange(user, range, { departmentId }),
     prisma.department.findMany({ where: { organizationId: user.organizationId }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.client.findMany({ where: { organizationId: user.organizationId }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
+    reportGaps(user, range),
+    departmentId || clientId ? Promise.resolve(null) : directionGross(user, range),
   ])
   const metrics = Object.fromEntries((["REVENUE", "DIRECT_COSTS", "OPEX", "EBITDA", "NET_PROFIT"] as const).map((m) => [m, budget.metric(m)]))
   const accounts: Record<string, string> = {}
@@ -49,6 +55,7 @@ async function Pnl({ searchParams }: { searchParams: PageProps<"/pnl">["searchPa
         period={period}
         filters={{ labels: t.filters, departments, clients, departmentId, clientId }}
       />
+      <GapsPanel gaps={gaps} locale={locale} currency={user.baseCurrency} focus="pnl" />
       <PnlStatement
         locale={locale}
         currency={user.baseCurrency}
@@ -59,6 +66,7 @@ async function Pnl({ searchParams }: { searchParams: PageProps<"/pnl">["searchPa
         yearAgo={report.yearAgo}
         budget={budget.hasAny ? { metrics, accounts } : null}
       />
+      {directions && directions.rows.length > 0 && <DirectionGross locale={locale} currency={user.baseCurrency} data={directions} />}
     </div>
   )
 }

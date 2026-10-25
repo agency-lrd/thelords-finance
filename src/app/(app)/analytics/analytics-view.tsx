@@ -50,8 +50,6 @@ export function AnalyticsView(props: {
     { key: "activeClients", label: t.activeClients, get: (m) => m.activeClients, kind: "count", agg: "avg" },
     { key: "employees", label: t.employees, get: (m) => m.employees, kind: "count", agg: "last" },
     { key: "avgSalary", label: t.avgSalary, get: (m) => m.avgSalary, kind: "money", agg: "avg" },
-    { key: "CLIENT_NPS", label: t.clientNps, get: (m) => m.manual.CLIENT_NPS ?? null, kind: "number", agg: "avg", manual: "CLIENT_NPS" },
-    { key: "EMPLOYEE_NPS", label: t.employeeNps, get: (m) => m.manual.EMPLOYEE_NPS ?? null, kind: "number", agg: "avg", manual: "EMPLOYEE_NPS" },
     { key: "MANAGED_BUDGET", label: t.managedBudget, get: (m) => m.manual.MANAGED_BUDGET ?? null, kind: "money", agg: "sum", manual: "MANAGED_BUDGET" },
     { key: "revenue", label: t.agencyRevenue, get: (m) => m.revenue, kind: "money", agg: "sum" },
     { key: "grossProfit", label: t.grossProfit, get: (m) => m.grossProfit, kind: "money", agg: "sum" },

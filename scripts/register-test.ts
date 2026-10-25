@@ -160,6 +160,44 @@ async function main() {
       assert.equal((await tx.listTransactions(admin, {}, prisma)).find((r) => r.kind === "CLIENT_PAYMENT")!.team, "Команда Александр")
       await assert.rejects(() => register.saveClientCategory(admin, { id: null, name: "casino / igaming" }, prisma), /already exists/)
     })
+
+    await step("24. employee count: distinct people on the month's sheet, never all profiles or payslips", async () => {
+      const analytics = await import("../src/lib/reports/analytics")
+      // Extra profiles never on October's sheet, and an archived one: none of them count.
+      for (const n of ["Ghost One", "Ghost Two"]) await prisma.employee.create({ data: { organizationId: org.id, employeeNumber: `G-${n}`, firstName: n, lastName: "", hireDate: d("2025-01-01"), status: "ACTIVE" } })
+      const extra = await sheet.addSheetEmployee(admin, oct, { name: "Archived Later", departmentId: influence.id, fix: "500", currency: "USD", hireDate: d("2026-01-01") }, prisma)
+      await sheet.setEmployeeArchived(admin, extra.id, true, prisma)
+      const months = (await analytics.monthlyAnalytics(admin, 2026, prisma)).months
+      const octRows = (await sheet.getSheet(admin, oct, prisma)).rows.length
+      assert.equal(months[9].employees, octRows, "October analytics = people on October's sheet")
+      assert.equal(months[8].employees, 1, "September: one person (approved payslip), not counted twice")
+      const defs = (await analytics.monthlyAnalytics(admin, 2026, prisma)).definitions.map((x) => x.code)
+      assert.ok(!defs.includes("CLIENT_NPS") && !defs.includes("EMPLOYEE_NPS"), "NPS is no longer shown")
+    })
+
+    await step("25. report gaps: unapproved payroll and unconfirmed rows are listed; directions view is filtered", async () => {
+      const gaps = await import("../src/lib/reports/gaps")
+      const g = await gaps.reportGaps(admin, range("month", 2026, 10), prisma)
+      assert.deepEqual(g.payrollNotApproved.map((x) => x.month), ["2026-10"])
+      assert.equal(g.plannedCosts.count, 1, "the carried plan is listed as not included")
+      const dir = await gaps.directionGross(admin, range("month", 2026, 10), prisma)
+      assert.deepEqual(dir.rows.map((r) => r.name), [influence.name, ...dir.rows.slice(1).map((r) => r.name)])
+      assert.equal(dir.rows[0].revenue, "10000")
+      const balances = await gaps.accountBalances(admin, d("2026-10-31"), prisma)
+      const total = balances.reduce((a, b) => a + Number(b.balance), 0)
+      assert.equal(String(total), (await cash(oct)).closingCash, "account balances add up to closing cash")
+    })
+
+    await step("department and team analytics: one month with the change from the previous month", async () => {
+      const analytics = await import("../src/lib/reports/analytics")
+      const a = await analytics.departmentAnalytics(admin, oct, prisma)
+      const inf = a.departments.find((x) => x.id === influence.id)!
+      assert.equal(inf.current.revenue, "10000")
+      assert.equal(inf.previous.payroll, "1000", "September's approved payroll")
+      const team = a.teams.find((x) => x.name === "Команда Александр")!
+      assert.equal(team.previous.revenue, "5000")
+      assert.equal(team.previous.direct, "800")
+    })
   } finally {
     summary()
     await stop()

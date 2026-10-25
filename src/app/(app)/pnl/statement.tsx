@@ -9,6 +9,7 @@ import { DrillLabel } from "@/components/reports/drill"
 import { InfoTip } from "@/components/reports/info"
 import { formatAmount, type Locale } from "@/lib/i18n/format"
 import { reportTexts } from "@/lib/i18n/reports"
+import { accountLabel } from "@/lib/reports/account-names"
 import { growth, percent, type Pnl, type PnlSectionKey } from "@/lib/reports/statements"
 
 type Budget = { metrics: Record<string, string | null>; accounts: Record<string, string> }
@@ -69,9 +70,9 @@ export function PnlStatement(props: Props) {
           [...accounts.entries()].sort((a, b) => a[1].code.localeCompare(b[1].code)).map(([id, a]) => (
             <tr key={id} className="hover:bg-white/[0.02]">
               <td className="py-1.5 pr-3 pl-8">
-                <DrillLabel accountId={id} name={a.name} period={props.period} filters={props.filters} currency={currency}>
-                  <span className="mr-2 font-mono text-xs text-muted-foreground">{a.code}</span>
-                  {a.name}
+                <DrillLabel accountId={id} name={accountLabel(a.code, a.name, locale)} period={props.period} filters={props.filters} currency={currency}>
+                  {accountLabel(a.code, a.name, locale)}
+                  <span className="ml-2 font-mono text-[10px] text-muted-foreground/60">{a.code}</span>
                 </DrillLabel>
               </td>
               {cells({ cur: amount(current, id), prev: amount(previous, id), ago: amount(yearAgo, id), bud: budget?.accounts[id] })}
