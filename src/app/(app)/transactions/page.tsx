@@ -5,6 +5,7 @@ import { PageSkeleton } from "@/components/shared/page-skeleton"
 import type { TransactionType } from "@/generated/prisma/client"
 import { can, requirePageAccess } from "@/lib/auth/session"
 import { listFinancialAccounts } from "@/lib/data/accounts"
+import { listSalaryPayments } from "@/lib/data/cash-register"
 import { listTransactions, TRANSACTION_TYPES, transactionOptions } from "@/lib/data/transactions"
 import { getDictionary } from "@/lib/i18n/server"
 
@@ -39,7 +40,13 @@ async function Transactions({ searchParams }: { searchParams: PageProps<"/transa
     categoryId: id("category"),
     search: s("q").slice(0, 100) || null,
   }
-  const [rows, options, balances] = await Promise.all([listTransactions(user, filters), transactionOptions(user), listFinancialAccounts(user)])
+  const [rows, options, balances, salaryPayments] = await Promise.all([
+    listTransactions(user, filters),
+    transactionOptions(user),
+    listFinancialAccounts(user),
+    // Salary payments are payroll records; shown here as the same records (filtered like the register).
+    filters.type || filters.departmentId || filters.categoryId || filters.search || filters.status === "DRAFT" ? Promise.resolve([]) : listSalaryPayments(user, filters),
+  ])
   return (
     <TransactionsWorkspace
       locale={locale}
@@ -48,7 +55,8 @@ async function Transactions({ searchParams }: { searchParams: PageProps<"/transa
       options={options}
       balances={balances.filter((a) => !a.closed).map((a) => ({ id: a.id, name: a.name, currency: a.currency, balance: a.balance }))}
       filters={{ from: s("from"), to: s("to"), type: s("type"), status: s("status"), account: s("account"), dept: s("dept"), category: s("category"), q: s("q") }}
-      perms={{ create: can(user, "journal:create"), post: can(user, "journal:post") }}
+      perms={{ create: can(user, "journal:create"), post: can(user, "journal:post"), paySalary: can(user, "payroll:pay") }}
+      salaryPayments={salaryPayments}
     />
   )
 }

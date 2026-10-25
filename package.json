@@ -17,7 +17,7 @@
     "db:inspect": "tsx scripts/db-inspect.ts",
     "admin:grant-super": "tsx scripts/grant-super-admin.ts",
     "test:unit": "tsx --test \"src/**/*.test.ts\"",
-    "test": "npm run test:unit && npm run db:test && npm run test:sheet && npm run test:reports && npm run test:vault && npm run test:ai && npm run test:import && npm run test:sheet-admin && npm run test:period && npm run test:payroll-month && npm run test:sheet-pay",
+    "test": "npm run test:unit && npm run db:test && npm run test:sheet && npm run test:reports && npm run test:vault && npm run test:ai && npm run test:import && npm run test:sheet-admin && npm run test:period && npm run test:payroll-month && npm run test:sheet-pay && npm run test:register",
     "test:sheet": "tsx --conditions=react-server scripts/sheet-test.ts",
     "test:reports": "tsx --conditions=react-server scripts/reports-test.ts",
     "test:vault": "tsx --conditions=react-server scripts/vault-test.ts",
@@ -26,7 +26,8 @@
     "test:sheet-admin": "tsx --conditions=react-server scripts/sheet-admin-test.ts",
     "test:period": "tsx --conditions=react-server scripts/period-test.ts",
     "test:payroll-month": "tsx --conditions=react-server scripts/payroll-month-test.ts",
-    "test:sheet-pay": "tsx --conditions=react-server scripts/sheet-pay-test.ts"
+    "test:sheet-pay": "tsx --conditions=react-server scripts/sheet-pay-test.ts",
+    "test:register": "tsx --conditions=react-server scripts/register-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

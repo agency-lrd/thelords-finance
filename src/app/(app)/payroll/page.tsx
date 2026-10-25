@@ -46,8 +46,15 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
   if (showSalary) {
     for (const r of sheet.rows) {
       if (!r.departmentId || r.currency !== user.baseCurrency) continue
-      const value = new Decimal(payrollByDepartment[r.departmentId] ?? 0).add(r.confirmed && r.approved ? r.approved : r.calculated)
+      const value = new Decimal(payrollByDepartment[r.departmentId] ?? 0).add(r.confirmed && r.approved ? r.approved : r.payable)
       payrollByDepartment[r.departmentId] = value.toString()
+    }
+  }
+  const payrollByTeam: Record<string, string> = {}
+  if (showSalary) {
+    for (const r of sheet.rows) {
+      if (!r.teamId || r.currency !== user.baseCurrency) continue
+      payrollByTeam[r.teamId] = new Decimal(payrollByTeam[r.teamId] ?? 0).add(r.confirmed && r.approved ? r.approved : r.payable).toString()
     }
   }
   const openAccounts = accounts.filter((a) => !a.closed && a.type !== "LOAN").map((a) => ({ id: a.id, name: a.name, currency: a.currency }))
@@ -62,7 +69,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
       runStatus={sheet.run?.status ?? null}
       editable={sheet.editable}
       // Salary figures are removed server-side for users without salary:read.
-      rows={showSalary ? sheet.rows : sheet.rows.map((r) => ({ ...r, fix: null, variable: "0", bonus: "0", deduction: "0", calculated: "0", approved: null, paid: "0", outstanding: null }))}
+      rows={showSalary ? sheet.rows : sheet.rows.map((r) => ({ ...r, fix: null, fixProrated: null, variable: "0", bonus: "0", deduction: "0", calculated: "0", fact: null, factReason: null, payable: "0", approved: null, paid: "0", outstanding: null }))}
       departments={departments}
       accounts={can(user, "payroll:pay") ? openAccounts : []}
       perms={{
@@ -94,6 +101,8 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
         accounts={openAccounts}
         canManage={can(user, "project_finance:manage")}
         open={sheet.periodStatus !== "CLOSED" && sheet.periodStatus !== "LOCKED"}
+        payrollByTeam={payrollByTeam}
+        employees={sheet.rows.map((r) => ({ employeeId: r.employeeId, name: r.name, departmentId: r.departmentId, teamId: r.teamId }))}
       />
     )}
     </>

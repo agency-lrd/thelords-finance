@@ -234,6 +234,7 @@ export function netIncome(activity: AccountActivity[]) {
 export type CashLineKey =
   | "clientReceipts"
   | "operatingPayments"
+  | "clientBudgets"
   | "payrollPaid"
   | "taxesPaid"
   | "equipmentPurchases"
@@ -248,6 +249,7 @@ export type CashLineKey =
 export const CASH_ACTIVITY: Record<CashLineKey, "operating" | "investing" | "financing"> = {
   clientReceipts: "operating",
   operatingPayments: "operating",
+  clientBudgets: "operating",
   payrollPaid: "operating",
   taxesPaid: "operating",
   equipmentPurchases: "investing",
@@ -276,6 +278,9 @@ export function classifyCashLine(line: Pick<EntryLine, "type" | "subtype">, effe
       return "clientReceipts"
     case "PAYROLL_LIABILITY":
       return "payrollPaid"
+    // Client advertising budgets held and spent for clients (pass-through, never revenue).
+    case "OTHER_LIABILITY":
+      return "clientBudgets"
     case "TAX_LIABILITY":
     case "INCOME_TAX":
       return "taxesPaid"

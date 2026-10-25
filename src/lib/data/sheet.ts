@@ -222,6 +222,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       hireDate: e.hireDate.toISOString().slice(0, 10),
       departmentId: assignment?.departmentId ?? null,
       departmentName: assignment?.department.name ?? null,
+      teamId: assignment?.teamId ?? null,
       currency: salary?.currency ?? user.baseCurrency,
       payBasis: salary?.payBasis ?? "MONTHLY",
       fix: str(salary?.baseAmount),
@@ -687,6 +688,35 @@ async function setDepartmentFrom(tx: Tx, user: SessionUser, employeeId: string, 
   if (current) await tx.employeeAssignment.update({ where: { id: current.id }, data: { validTo: start } })
   await tx.employeeAssignment.create({
     data: { employeeId, departmentId, isPrimary: true, allocationRate: 1, validFrom: start, validTo: current?.validTo ?? next?.validFrom ?? null },
+  })
+}
+
+/**
+ * Puts an employee into a team of their department from the month's first day (dated like the
+ * department; earlier months keep their team). teamId null removes the team. Pay is not affected.
+ */
+export async function setEmployeeTeam(user: SessionUser, m: Month, employeeId: string, teamId: string | null, db: Db = prisma) {
+  if (!user.permissions.has("employee:manage") && !user.permissions.has("project_finance:manage")) throw new UserInputError("You do not have permission to assign teams.")
+  return inTx(db, async (tx) => {
+    await editableMonth(tx, user, m)
+    const start = monthStart(m)
+    const current = await tx.employeeAssignment.findFirst({
+      where: { employeeId, isPrimary: true, employee: { organizationId: user.organizationId }, validFrom: { lte: monthEnd(m) }, OR: [{ validTo: null }, { validTo: { gt: start } }] },
+      orderBy: { validFrom: "desc" },
+    })
+    if (!current) throw new UserInputError("Assign the employee to a department first.")
+    if (teamId) {
+      const team = await tx.team.findFirst({ where: { id: teamId, departmentId: current.departmentId, archivedAt: null } })
+      if (!team) throw new UserInputError("The team must belong to the employee's department.")
+    }
+    if (current.teamId === teamId) return
+    if (current.validFrom.getTime() >= start.getTime()) {
+      await tx.employeeAssignment.update({ where: { id: current.id }, data: { teamId } })
+    } else {
+      await tx.employeeAssignment.update({ where: { id: current.id }, data: { validTo: start } })
+      await tx.employeeAssignment.create({ data: { employeeId, departmentId: current.departmentId, teamId, isPrimary: true, allocationRate: current.allocationRate, validFrom: start, validTo: current.validTo } })
+    }
+    await audit(tx, user, "employee.team", "employee", employeeId, { month: `${m.year}-${String(m.month).padStart(2, "0")}`, teamId })
   })
 }
 

@@ -20,6 +20,7 @@ import {
   carryForwardEmployees,
   carryForwardPreview,
   reopenMonth,
+  setEmployeeTeam,
   type CarryForwardItem,
   type ChangeScope,
   type RuleConfig,
@@ -37,7 +38,8 @@ import {
   setSheetDepartmentArchived,
 } from "@/lib/data/sheet-admin"
 import { setPeriodStatus, type PeriodAction } from "@/lib/data/periods"
-import { addLedgerEntry, deleteLedgerEntry, recordSettlement, setLedgerConfirmed, updateLedgerEntry } from "@/lib/data/project-ledger"
+import { addLedgerEntry, carryRecurringCosts, createLedgerTeam, deleteLedgerEntry, recordSettlement, recurringCostPreview, setLedgerConfirmed, updateLedgerEntry, updateLedgerTeam, type CarryCostItem } from "@/lib/data/project-ledger"
+import { createCategory, moveCategory } from "@/lib/data/categories"
 import { toActionError, UserInputError } from "@/lib/forms"
 import { Decimal } from "@/lib/money"
 import { getLocale } from "@/lib/i18n/server"
@@ -323,6 +325,8 @@ export type LedgerFormInput = {
   teamId: string
   date: string
   notes: string
+  /** Costs: "true" marks a planned monthly cost (offered for carry-over). */
+  recurring?: string
 }
 
 function ledgerInput(input: Partial<LedgerFormInput>) {
@@ -345,6 +349,7 @@ function ledgerInput(input: Partial<LedgerFormInput>) {
     out.date = input.date ? new Date(`${input.date}T00:00:00Z`) : null
   }
   if (input.notes !== undefined) out.notes = input.notes.trim() || null
+  if (input.recurring !== undefined) out.recurring = input.recurring === "true"
   return out
 }
 
@@ -515,5 +520,75 @@ export async function periodAction(monthKey: string, action: string, reason: str
     return done()
   } catch (error) {
     return fail(error)
+  }
+}
+
+// ── Teams (Influence), recurring costs, category order ──
+
+export async function createTeamAction(departmentId: string, name: string): Promise<CellResult> {
+  try {
+    await createLedgerTeam(await authorize("project_finance:manage"), departmentId, name)
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function updateTeamAction(teamId: string, input: { name?: string; archived?: boolean; move?: "up" | "down" }): Promise<CellResult> {
+  try {
+    const clean = { ...(typeof input.name === "string" ? { name: input.name } : {}), ...(typeof input.archived === "boolean" ? { archived: input.archived } : {}), ...(input.move === "up" || input.move === "down" ? { move: input.move } : {}) }
+    await updateLedgerTeam(await authorize("project_finance:manage"), teamId, clean)
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function recurringPreviewAction(monthKey: string) {
+  try {
+    return { ok: true as const, preview: await recurringCostPreview(await authorize("project_finance:read"), month(monthKey)) }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function carryCostsAction(monthKey: string, items: CarryCostItem[]) {
+  try {
+    const result = await carryRecurringCosts(await authorize("project_finance:manage"), month(monthKey), Array.isArray(items) ? items.slice(0, 300) : [])
+    ledgerDone()
+    return { ok: true as const, ...result }
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function moveCategoryAction(categoryId: string, direction: "up" | "down"): Promise<CellResult> {
+  try {
+    await moveCategory(await authorize("ledger:manage"), categoryId, direction === "up" ? "up" : "down")
+    revalidatePath("/categories")
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+/** A new income or cost category from the workspace (appended at the end; ledger:manage). */
+export async function createLedgerCategoryAction(kind: "income" | "cost", name: string): Promise<CellResult> {
+  try {
+    await createCategory(await authorize("ledger:manage"), { name, kind: kind === "income" ? "REVENUE" : "COST_OF_SALES", parentId: null, ledgerAccountId: null })
+    revalidatePath("/categories")
+    return ledgerDone()
+  } catch (error) {
+    return fail(error)
+  }
+}
+
+export async function setEmployeeTeamAction(monthKey: string, employeeId: string, teamId: string | null): Promise<CellResult> {
+  try {
+    const user = await sessionUser()
+    await setEmployeeTeam(user, month(monthKey), employeeId, teamId || null)
+    return ledgerDone()
+  } catch (error) {
+    return failRu(error)
   }
 }

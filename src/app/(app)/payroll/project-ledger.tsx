@@ -15,6 +15,7 @@ import { formatAmount, normalizeNumber, type Locale } from "@/lib/i18n/format"
 
 import { addLedgerAction, confirmLedgerAction, deleteLedgerAction, settleLedgerAction, updateLedgerAction, type LedgerFormInput } from "./actions"
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
+import { TeamsPanel } from "./teams-panel"
 
 type Ledger = Awaited<ReturnType<typeof getProjectLedger>>
 type Row = Ledger["income"][number] | Ledger["costs"][number]
@@ -29,6 +30,9 @@ type Props = {
   accounts: { id: string; name: string; currency: string }[]
   canManage: boolean
   open: boolean
+  /** Payroll of employees assigned to each team (part of department payroll; analysis only). */
+  payrollByTeam: Record<string, string>
+  employees: { employeeId: string; name: string; departmentId: string | null; teamId: string | null }[]
 }
 
 const CURRENCIES = ["USD", "USDT", "EUR", "GBP"] as const
@@ -92,6 +96,22 @@ export function ProjectLedger(props: Props) {
           }}
         />
       ))}
+
+      <TeamsPanel
+        locale={locale}
+        monthKey={props.monthKey}
+        baseCurrency={baseCurrency}
+        ledger={ledger}
+        payrollByTeam={props.payrollByTeam}
+        employees={props.employees}
+        canManage={props.canManage}
+        editable={props.open}
+        onError={setError}
+        onDone={() => {
+          setError(null)
+          refresh()
+        }}
+      />
 
       {/* Department contribution ("Net profit company" in the original sheet, correctly named) */}
       <section className="flex flex-col gap-4">
@@ -255,6 +275,7 @@ function DepartmentCard(props: {
   const { kind, department, rows, t } = props
   const [item, setItem] = useState("")
   const [amount, setAmount] = useState("")
+  const [teamId, setTeamId] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const total = rows.reduce((acc, r) => acc.add(r.baseAmount), new Decimal(0))
 
@@ -262,7 +283,7 @@ function DepartmentCard(props: {
     const value = normalizeNumber(amount)
     if (!item.trim() || !value) return
     setBusy("add")
-    const input: LedgerFormInput = { departmentId: department.id, item, amount: value, currency: "USD", categoryId: "", projectId: "", clientId: "", clientName: "", teamId: "", date: "", notes: "" }
+    const input: LedgerFormInput = { departmentId: department.id, item, amount: value, currency: "USD", categoryId: "", projectId: "", clientId: "", clientName: "", teamId, date: "", notes: "" }
     const result = await addLedgerAction(props.monthKey, kind, input, allowDuplicate)
     setBusy(null)
     if (!result.ok) {
@@ -290,7 +311,7 @@ function DepartmentCard(props: {
       <table className="w-full text-[13px]">
         <thead className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
           <tr className="border-b border-border/60">
-            <th className="px-3 py-1.5 text-left font-medium">{kind === "income" ? `${t.ledger.item} / ${t.ledger.team}` : t.ledger.item}</th>
+            <th className="px-3 py-1.5 text-left font-medium">{department.teams.length ? `${t.ledger.item} / ${t.ledger.team}` : t.ledger.item}</th>
             <th className="px-3 py-1.5 text-right font-medium">{t.ledger.sum}</th>
             <th className="w-10 px-2 py-1.5 font-medium">✓</th>
           </tr>
@@ -300,6 +321,7 @@ function DepartmentCard(props: {
             <tr key={r.id} className={cn("border-b border-border/40 hover:bg-white/[0.03]", !r.confirmed && "text-foreground/70")}>
               <td className="max-w-0 px-3 py-1.5">
                 <button type="button" onClick={() => props.onEdit(r)} className="block w-full truncate text-left hover:text-primary" title={[r.categoryName, r.clientName, r.notes].filter(Boolean).join(" · ")}>
+                  {"recurring" in r && r.recurring && <span className="mr-1 text-[10px] text-primary/80" title={props.locale === "ru" ? "Повторяющийся расход" : "Recurring cost"}>↻</span>}
                   {r.item}
                   {(r.clientName || r.teamName) && <span className="ml-1.5 text-[11px] text-muted-foreground">{r.teamName ?? r.clientName}</span>}
                 </button>
@@ -323,6 +345,12 @@ function DepartmentCard(props: {
             <tr>
               <td className="px-2 py-1.5">
                 <Input value={item} onChange={(e) => setItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder={t.ledger.addRow} className="h-7 text-[13px]" aria-label={t.ledger.item} maxLength={200} />
+                {department.teams.length > 0 && (
+                  <Select value={teamId} onChange={(e) => setTeamId(e.target.value)} className="mt-1 h-7 text-[12px]" aria-label={t.ledger.team}>
+                    <option value="">{t.ledger.team}: —</option>
+                    {department.teams.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                  </Select>
+                )}
               </td>
               <td className="px-2 py-1.5">
                 <Input value={amount} onChange={(e) => setAmount(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} inputMode="decimal" placeholder="0" className="h-7 text-right font-mono text-[13px]" aria-label={t.ledger.sum} />
@@ -372,6 +400,7 @@ function RowDialog(props: {
     teamId: row.teamId ?? "",
     date: row.date,
     notes: row.notes ?? "",
+    recurring: "recurring" in row && row.recurring ? "true" : "false",
   })
   const [settle, setSettle] = useState({ amount: "", financialAccountId: props.accounts[0]?.id ?? "", date: new Date().toISOString().slice(0, 10) })
   const [error, setError] = useState<string | null>(null)
@@ -410,7 +439,7 @@ function RowDialog(props: {
           className="grid grid-cols-2 gap-3"
           onSubmit={(e) => {
             e.preventDefault()
-            if (locked) return run(() => updateLedgerAction(kind, row.id, { notes: form.notes }))
+            if (locked) return run(() => updateLedgerAction(kind, row.id, kind === "cost" ? { notes: form.notes, recurring: form.recurring } : { notes: form.notes }))
             run(() => updateLedgerAction(kind, row.id, { ...form, amount: normalizeNumber(form.amount) ?? form.amount }))
           }}
         >
@@ -450,22 +479,20 @@ function RowDialog(props: {
               {ledger.projects.filter((p) => !p.departmentId || p.departmentId === form.departmentId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </Select>
           </Field>
-          {kind === "income" ? (
-            <Field label={t.ledger.team}>
-              <Select value={form.teamId} onChange={set("teamId")} disabled={locked}>
-                <option value="">—</option>
-                {ledger.departments.find((d) => d.id === form.departmentId)?.teams.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-              </Select>
-            </Field>
-          ) : (
-            <Field label={t.ledger.date}>
-              <Input type="date" value={form.date} onChange={set("date")} disabled={locked} />
-            </Field>
-          )}
-          {kind === "income" && (
-            <Field label={t.ledger.date}>
-              <Input type="date" value={form.date} onChange={set("date")} disabled={locked} />
-            </Field>
+          <Field label={t.ledger.team}>
+            <Select value={form.teamId} onChange={set("teamId")} disabled={locked}>
+              <option value="">—</option>
+              {ledger.departments.find((d) => d.id === form.departmentId)?.teams.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </Select>
+          </Field>
+          <Field label={t.ledger.date}>
+            <Input type="date" value={form.date} onChange={set("date")} disabled={locked} />
+          </Field>
+          {kind === "cost" && (
+            <label className="col-span-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={form.recurring === "true"} disabled={!props.editable} onChange={(e) => setForm((f) => ({ ...f, recurring: e.target.checked ? "true" : "false" }))} className="accent-[var(--primary)]" />
+              {props.locale === "ru" ? "Повторяющийся ежемесячный расход (предлагать перенос в следующий месяц)" : "Recurring monthly cost (offer to carry into next month)"}
+            </label>
           )}
           <Field label={t.ledger.comment} span>
             <Textarea value={form.notes} onChange={set("notes")} disabled={!props.editable} maxLength={2000} />

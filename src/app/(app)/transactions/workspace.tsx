@@ -14,6 +14,10 @@ import { formatAmount, formatDate, normalizeNumber, type Locale } from "@/lib/i1
 import { transactionTexts, type TransactionTexts } from "@/lib/i18n/transactions"
 import { toCsv, writeXlsx } from "@/lib/xlsx"
 
+import { MovementDialog } from "@/components/finance/movement-dialog"
+import type { listSalaryPayments } from "@/lib/data/cash-register"
+import { KIND_LABELS } from "@/lib/transactions/kinds"
+
 import { ImportWizard } from "./import-wizard"
 import { deleteDraftAction, importAction, postAction, reverseAction, saveTransactionAction, settleAction, type TransactionForm } from "./actions"
 
@@ -27,7 +31,8 @@ type Props = {
   options: Options
   balances: { id: string; name: string; currency: string; balance: string }[]
   filters: Record<"from" | "to" | "type" | "status" | "account" | "dept" | "category" | "q", string>
-  perms: { create: boolean; post: boolean }
+  perms: { create: boolean; post: boolean; paySalary: boolean }
+  salaryPayments: Awaited<ReturnType<typeof listSalaryPayments>>
 }
 
 const TYPES = Object.keys(transactionTexts.ru.types) as (keyof TransactionTexts["types"])[]
@@ -58,6 +63,13 @@ export function TransactionsWorkspace(props: Props) {
   const [panel, setPanel] = useState<"none" | "bulk" | "import" | "reconcile">("none")
   const [message, setMessage] = useState<{ text: string; tone: "ok" | "error" } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [movement, setMovement] = useState(false)
+  const kindLabel = KIND_LABELS[locale]
+  const merged = useMemo(
+    () =>
+      [...rows.map((r) => ({ key: r.id, date: r.date, tx: r, pay: null })), ...props.salaryPayments.map((p) => ({ key: `pay-${p.id}`, date: p.date, tx: null, pay: p }))].sort((a, b) => b.date.localeCompare(a.date)),
+    [rows, props.salaryPayments],
+  )
   const refresh = () => startRefresh(() => router.refresh())
   const money = (v: string, c: string) => formatAmount(v, c, locale)
   const drafts = rows.filter((r) => r.status === "DRAFT")
@@ -94,8 +106,13 @@ export function TransactionsWorkspace(props: Props) {
         </div>
         <div className="flex flex-wrap gap-2">
           {perms.create && (
-            <Button size="sm" onClick={() => (props.balances.length ? setEditing({ row: null, form: emptyForm(props.balances[0]?.id) }) : setMessage({ text: t.noAccount, tone: "error" }))}>
-              <Plus /> {t.add}
+            <Button size="sm" onClick={() => (props.balances.length ? setMovement(true) : setMessage({ text: t.noAccount, tone: "error" }))}>
+              <Plus /> {locale === "ru" ? "Записать движение денег" : "Record money movement"}
+            </Button>
+          )}
+          {perms.create && (
+            <Button size="sm" variant="outline" onClick={() => (props.balances.length ? setEditing({ row: null, form: emptyForm(props.balances[0]?.id) }) : setMessage({ text: t.noAccount, tone: "error" }))}>
+              {locale === "ru" ? "Бухгалтерская запись" : "Accounting entry"}
             </Button>
           )}
           {perms.create && <Button size="sm" variant="outline" onClick={() => setPanel(panel === "bulk" ? "none" : "bulk")}><Rows3 /> {t.bulk}</Button>}
@@ -141,10 +158,26 @@ export function TransactionsWorkspace(props: Props) {
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && (
+            {merged.length === 0 && (
               <tr><td colSpan={13} className="px-4 py-14 text-center"><p className="font-medium">{t.empty}</p><p className="mt-1 text-sm text-muted-foreground">{t.emptyHint}</p></td></tr>
             )}
-            {rows.map((r) => (
+            {merged.map(({ key, tx: r, pay }) => !r ? (
+              <tr key={key} className="border-t border-border/50" title={locale === "ru" ? "Выплата по утверждённой ведомости (финансовый лист). Одна запись: она же в Cash Flow." : "Payment of an approved payslip (financial sheet). One record, also in Cash Flow."}>
+                <td className="px-2 py-2" />
+                <td className="px-3 py-2 font-mono text-muted-foreground">{pay!.journalEntryNumber ? `J${pay!.journalEntryNumber}` : "—"}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{formatDate(pay!.date, locale)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{kindLabel.SALARY}</td>
+                <td className="max-w-72 truncate px-3 py-2">{pay!.employee} · {pay!.payrollMonth}{pay!.reference && <span className="ml-2 text-[11px] text-muted-foreground">· {pay!.reference}</span>}</td>
+                <td className="px-3 py-2 text-right font-mono whitespace-nowrap">{money(pay!.amount, pay!.currency)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{pay!.account ?? "—"}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{pay!.department ?? "—"}</td>
+                <td className="px-3 py-2">{locale === "ru" ? "Зарплата" : "Payroll"}</td>
+                <td className="px-3 py-2">{pay!.employee}</td>
+                <td className="px-3 py-2">{t.settlement.PAID}</td>
+                <td className="px-3 py-2 whitespace-nowrap"><span className="rounded-full border border-primary/50 px-2 py-0.5 text-[11px] text-primary">{pay!.status === "REVERSED" ? t.status.REVERSED : t.status.POSTED}</span></td>
+                <td className="px-3 py-2" />
+              </tr>
+            ) : (
               <tr key={r.id} onClick={() => setEditing({ row: r, form: fromRow(r) })} className={cn("cursor-pointer border-t border-border/50 hover:bg-white/[0.03]", r.status === "REVERSED" && "text-muted-foreground line-through decoration-muted-foreground/40", r.status === "DRAFT" && "text-foreground/75")}>
                 <td className="px-2 py-2 text-center" onClick={(e) => e.stopPropagation()}>
                   {r.status === "DRAFT" && perms.post && (
@@ -153,7 +186,7 @@ export function TransactionsWorkspace(props: Props) {
                 </td>
                 <td className="px-3 py-2 font-mono text-muted-foreground">{r.number}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{formatDate(r.date, locale)}</td>
-                <td className="px-3 py-2 whitespace-nowrap">{t.types[r.type]}</td>
+                <td className="px-3 py-2 whitespace-nowrap" title={t.types[r.type]}>{kindLabel[r.kind]}{r.team && <span className="block text-[10px] text-muted-foreground">{r.team}</span>}</td>
                 <td className="max-w-72 truncate px-3 py-2">{r.description}{r.notes && <span className="ml-2 text-[11px] text-muted-foreground">· {r.notes}</span>}</td>
                 <td className="px-3 py-2 text-right font-mono whitespace-nowrap">{money(r.amount, r.currency)}{r.currency !== props.baseCurrency && <span className="block text-[10px] text-muted-foreground">{money(r.baseAmount, props.baseCurrency)}</span>}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{r.financialAccount ?? "—"}{r.counterFinancialAccount && ` → ${r.counterFinancialAccount}`}</td>
@@ -168,6 +201,20 @@ export function TransactionsWorkspace(props: Props) {
           </tbody>
         </table>
       </div>
+
+      {movement && (
+        <MovementDialog
+          locale={locale}
+          options={{ ...options, accounts: props.balances.map((a) => ({ id: a.id, name: a.name, currency: a.currency })) }}
+          canPaySalary={perms.paySalary}
+          onClose={() => setMovement(false)}
+          onSaved={(text) => {
+            setMovement(false)
+            setMessage({ text, tone: "ok" })
+            refresh()
+          }}
+        />
+      )}
 
       {editing && (
         <TransactionDialog

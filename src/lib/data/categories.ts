@@ -43,7 +43,7 @@ function need(user: SessionUser) {
 
 export async function listCategoryTree(user: SessionUser, db: Db = prisma) {
   const [categories, accounts] = await Promise.all([
-    db.financialCategory.findMany({ where: { organizationId: user.organizationId }, include: { ledgerAccount: { select: { id: true, code: true, name: true } } }, orderBy: [{ kind: "asc" }, { sortOrder: "asc" }, { name: "asc" }] }),
+    db.financialCategory.findMany({ where: { organizationId: user.organizationId }, include: { ledgerAccount: { select: { id: true, code: true, name: true } } }, orderBy: [{ kind: "asc" }, { sortOrder: "asc" }, { createdAt: "asc" }] }),
     db.ledgerAccount.findMany({ where: { organizationId: user.organizationId, type: { in: ["REVENUE", "EXPENSE"] }, archivedAt: null }, orderBy: { code: "asc" } }),
   ])
   return {
@@ -102,7 +102,9 @@ export async function createCategory(user: SessionUser, input: { name: string; k
       ledgerAccountId = fallback?.id ?? (await newLine(tx, user, input.kind, name)).id
     }
     const code = await uniqueCode(name, async (c) => Boolean(await tx.financialCategory.findUnique({ where: { organizationId_code: { organizationId: user.organizationId, code: c } } })))
-    const category = await tx.financialCategory.create({ data: { organizationId: user.organizationId, code, name, kind: input.kind, parentId: input.parentId, ledgerAccountId } })
+    // New categories go to the end of their kind (stable order: explicit position, then creation).
+    const last = await tx.financialCategory.aggregate({ where: { organizationId: user.organizationId, kind: input.kind }, _max: { sortOrder: true } })
+    const category = await tx.financialCategory.create({ data: { organizationId: user.organizationId, code, name, kind: input.kind, parentId: input.parentId, ledgerAccountId, sortOrder: (last._max.sortOrder ?? 0) + 10 } })
     await audit(tx, user, "category.create", "financial_category", category.id, { name, kind: input.kind, ledgerAccountId })
     return category
   })
@@ -131,5 +133,22 @@ export async function updateCategory(user: SessionUser, id: string, input: { nam
       },
     })
     await audit(tx, user, "category.update", "financial_category", id, input)
+  })
+}
+
+/** Moves a category one place up or down within its kind (positions are stored, never re-sorted by name). */
+export async function moveCategory(user: SessionUser, id: string, direction: "up" | "down", db: Db = prisma) {
+  need(user)
+  return inTx(db, async (tx) => {
+    const category = await tx.financialCategory.findFirst({ where: { id, organizationId: user.organizationId } })
+    if (!category) throw new UserInputError("Category not found.")
+    const siblings = await tx.financialCategory.findMany({ where: { organizationId: user.organizationId, kind: category.kind, parentId: category.parentId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] })
+    const i = siblings.findIndex((c) => c.id === id)
+    const j = direction === "up" ? i - 1 : i + 1
+    if (j < 0 || j >= siblings.length) return
+    const order = siblings.map((c) => c.id)
+    ;[order[i], order[j]] = [order[j], order[i]]
+    for (const [index, cid] of order.entries()) await tx.financialCategory.update({ where: { id: cid }, data: { sortOrder: (index + 1) * 10 } })
+    await audit(tx, user, "category.move", "financial_category", id, { direction })
   })
 }

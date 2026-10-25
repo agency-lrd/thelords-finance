@@ -562,6 +562,7 @@ model Organization {
   kpiActuals              KpiActual[]
   payrollRuns             PayrollRun[]
   payrollApprovalVersions PayrollApprovalVersion[]
+  clientCategories        ClientCategory[]
   payrollAdjustments      PayrollAdjustment[]
   clients                 Client[]
   projects                Project[]
@@ -840,6 +841,7 @@ model Team {
   description    String?
   leadEmployeeId String?   @map("lead_employee_id") @db.Uuid
   archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  sortOrder      Int       @default(0) @map("sort_order")
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -851,6 +853,8 @@ model Team {
   kpiActuals         KpiActual[]
   payrollItems       PayrollItem[]
   projectIncome      ProjectIncome[]
+  projectCosts       ProjectCost[]
+  transactions       Transaction[]
 
   @@unique([departmentId, code])
   @@map("teams")
@@ -1364,11 +1368,13 @@ model Client {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization       Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   projects           Project[]
   journalLines       JournalLine[]
-  defaultCurrencyRef Currency?     @relation("ClientDefaultCurrency", fields: [defaultCurrency], references: [code], onDelete: Restrict)
+  defaultCurrencyRef Currency?       @relation("ClientDefaultCurrency", fields: [defaultCurrency], references: [code], onDelete: Restrict)
   transactions       Transaction[]
+  categoryId         String?         @map("category_id") @db.Uuid
+  category           ClientCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, code])
   @@map("clients")
@@ -1462,6 +1468,10 @@ model ProjectCost {
   incurredDate   DateTime   @map("incurred_date") @db.Date
   paidDate       DateTime?  @map("paid_date") @db.Date
   notes          String?
+  teamId         String?    @map("team_id") @db.Uuid
+  /// A planned monthly cost: offered for carrying into the next month (never recognized until confirmed).
+  recurring      Boolean    @default(false)
+  carriedFromId  String?    @map("carried_from_id") @db.Uuid
   journalEntryId String?    @unique @map("journal_entry_id") @db.Uuid
   createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1473,9 +1483,14 @@ model ProjectCost {
   payrollItem  PayrollItem?      @relation(fields: [payrollItemId], references: [id], onDelete: Restrict)
   journalEntry JournalEntry?     @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
   currencyRef  Currency          @relation("ProjectCostCurrency", fields: [currency], references: [code], onDelete: Restrict)
+  team         Team?             @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  carriedFrom  ProjectCost?      @relation("CostCarry", fields: [carriedFromId], references: [id], onDelete: Restrict)
+  carriedTo    ProjectCost[]     @relation("CostCarry")
 
+  @@unique([periodId, carriedFromId])
   @@index([projectId, periodId])
   @@index([periodId])
+  @@index([teamId])
   @@map("project_costs")
 }
 
@@ -1792,6 +1807,9 @@ model Transaction {
   attachmentUrl             String?           @map("attachment_url")
   externalRef               String?           @map("external_ref") // import de-duplication key
   importBatchId             String?           @map("import_batch_id") @db.Uuid
+  /// Owner-facing kind (client payment, salary, owner distribution...); `type` stays the accounting template.
+  kind                      String?           @db.VarChar(40)
+  teamId                    String?           @map("team_id") @db.Uuid
   journalEntryId            String?           @unique @map("journal_entry_id") @db.Uuid
   createdById               String?           @map("created_by_id") @db.Uuid
   postedById                String?           @map("posted_by_id") @db.Uuid
@@ -1799,6 +1817,7 @@ model Transaction {
   createdAt                 DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                 DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  team                    Team?                   @relation(fields: [teamId], references: [id], onDelete: Restrict)
   organization            Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   period                  FinancialPeriod         @relation(fields: [periodId], references: [id], onDelete: Restrict)
   financialAccount        FinancialAccount?       @relation("TransactionAccount", fields: [financialAccountId], references: [id], onDelete: Restrict)
@@ -1821,6 +1840,9 @@ model Transaction {
   @@index([organizationId, date])
   @@index([importBatchId])
   @@index([periodId])
+  @@index([organizationId, kind])
+  @@index([shareholderId])
+  @@index([clientId])
   @@map("transactions")
 }
 
@@ -2155,4 +2177,20 @@ model PayrollApprovalVersion {
   @@unique([payrollRunId, version])
   @@index([periodId])
   @@map("payroll_approval_versions")
+}
+
+/// Client categories for receipts and client analytics (Casino, E-commerce, ...). Ordered explicitly.
+model ClientCategory {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  sortOrder      Int       @default(0) @map("sort_order")
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  clients      Client[]
+
+  @@unique([organizationId, name])
+  @@map("client_categories")
 }

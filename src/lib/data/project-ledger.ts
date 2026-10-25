@@ -46,7 +46,7 @@ export async function getProjectLedger(user: SessionUser, m: Month, db: Db = pri
   const periodWhere = { period: { organizationId: user.organizationId, year: m.year, month: m.month } }
   const departments = await db.department.findMany({
     where: { organizationId: user.organizationId, archivedAt: null },
-    include: { teams: { where: { archivedAt: null }, orderBy: { name: "asc" } } },
+    include: { teams: { where: { archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } },
     orderBy: { name: "asc" },
   })
   const income = await db.projectIncome.findMany({
@@ -56,12 +56,12 @@ export async function getProjectLedger(user: SessionUser, m: Month, db: Db = pri
   })
   const costs = await db.projectCost.findMany({
     where: periodWhere,
-    include: { project: { include: { client: true, department: true } }, category: true },
+    include: { project: { include: { client: true, department: true } }, category: true, team: true },
     orderBy: { createdAt: "asc" },
   })
   const categories = await db.financialCategory.findMany({
     where: { organizationId: user.organizationId, archivedAt: null, kind: { in: [...INCOME_KINDS, ...COST_KINDS] }, code: { notIn: PAYROLL_CATEGORY_CODES } },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
   })
   const clients = await db.client.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: { name: "asc" } })
   const projects = await db.project.findMany({
@@ -103,8 +103,10 @@ export async function getProjectLedger(user: SessionUser, m: Month, db: Db = pri
       date: iso(r.incurredDate)!,
       status: r.status as string,
       settled: r.status === "PAID" ? r.amount.toString() : "0",
-      teamId: null as string | null,
-      teamName: null as string | null,
+      teamId: r.teamId,
+      teamName: r.team?.name ?? null,
+      recurring: r.recurring,
+      carried: !!r.carriedFromId,
     })),
     categories: categories.map((c) => ({ id: c.id, name: c.name, kind: INCOME_KINDS.includes(c.kind) ? ("income" as const) : ("cost" as const) })),
     clients: clients.map((c) => ({ id: c.id, name: c.name })),
@@ -128,6 +130,8 @@ export type LedgerInput = {
   teamId: string | null
   date: Date | null
   notes: string | null
+  /** Costs only: a planned monthly cost offered for carrying into the next month. */
+  recurring?: boolean
 }
 
 /** Resolves the project a row belongs to (see the module comment). */
@@ -233,7 +237,7 @@ export async function addLedgerEntry(user: SessionUser, m: Month, kind: LedgerKi
     const row =
       kind === "income"
         ? await tx.projectIncome.create({ data: { ...base, status: "PLANNED", invoiceDate: date, teamId: input.teamId } })
-        : await tx.projectCost.create({ data: { ...base, status: "PLANNED", incurredDate: date } })
+        : await tx.projectCost.create({ data: { ...base, status: "PLANNED", incurredDate: date, teamId: input.teamId, recurring: input.recurring ?? false } })
     await audit(tx, user, `project_${kind}.create`, `project_${kind}`, row.id, { item, amount: base.amount, currency: input.currency, projectId: project.id })
     return row
   })
@@ -252,11 +256,13 @@ export async function updateLedgerEntry(user: SessionUser, kind: LedgerKind, id:
     const row = await loadRow(tx, user, kind, id)
     const m = { year: row.period.year, month: row.period.month }
     assertPeriodOpen(row.period, m, user)
-    const onlyNotes = Object.keys(input).every((k) => k === "notes")
+    // Notes and the recurring flag are labels: they can change on a confirmed row.
+    const onlyNotes = Object.keys(input).every((k) => k === "notes" || k === "recurring")
     if (row.journalEntryId && !onlyNotes) throw new UserInputError("This row is confirmed. Un-confirm it to change it (a reversal is posted).")
 
     const data: Record<string, unknown> = {}
     if (input.notes !== undefined) data.notes = input.notes?.slice(0, 2000) || null
+    if (kind === "cost" && input.recurring !== undefined) data.recurring = input.recurring
     if (!onlyNotes) {
       const departmentId = input.departmentId ?? row.project.departmentId
       if (!departmentId) throw new UserInputError("Choose a department.")
@@ -283,7 +289,10 @@ export async function updateLedgerEntry(user: SessionUser, kind: LedgerKind, id:
         Object.assign(data, { amount: amount.toString(), currency, fxRateToBase: fxRate.toString(), baseAmount: toBase(amount, fxRate).toString() })
       }
       if (input.date !== undefined) data[kind === "income" ? "invoiceDate" : "incurredDate"] = checkDate(input.date, m)
-      if (kind === "income" && input.teamId !== undefined) data.teamId = input.teamId
+      if (input.teamId !== undefined) {
+        if (input.teamId && !(await tx.team.findFirst({ where: { id: input.teamId, department: { organizationId: user.organizationId } } }))) throw new UserInputError("Team not found.")
+        data.teamId = input.teamId
+      }
     }
     if (kind === "income") await tx.projectIncome.update({ where: { id }, data })
     else await tx.projectCost.update({ where: { id }, data })
@@ -400,4 +409,139 @@ export async function recordSettlement(
     }
     await audit(tx, user, `project_${kind}.settle`, `project_${kind}`, id, { amount: delta.toString(), accountId: account.id })
   })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Teams (e.g. "Команда Саня" inside Influence) and monthly carry-over of recurring costs
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function createLedgerTeam(user: SessionUser, departmentId: string, name: string, db: Db = prisma) {
+  requireManage(user)
+  const clean = name.trim()
+  if (!clean || clean.length > 80) throw new UserInputError("Enter a team name (max 80 characters).")
+  return inTx(db, async (tx) => {
+    const department = await tx.department.findFirst({ where: { id: departmentId, organizationId: user.organizationId, archivedAt: null } })
+    if (!department) throw new UserInputError("Choose a department.")
+    const clash = await tx.team.findFirst({ where: { departmentId, archivedAt: null, name: { equals: clean, mode: "insensitive" } } })
+    if (clash) throw new UserInputError("A team with this name already exists in the department.")
+    const code = await uniqueCode(clean, async (c) => Boolean(await tx.team.findUnique({ where: { departmentId_code: { departmentId, code: c } } })))
+    const last = await tx.team.aggregate({ where: { departmentId }, _max: { sortOrder: true } })
+    const team = await tx.team.create({ data: { departmentId, code, name: clean, sortOrder: (last._max.sortOrder ?? 0) + 10 } })
+    await audit(tx, user, "team.create", "team", team.id, { name: clean, departmentId })
+    return team
+  })
+}
+
+export async function updateLedgerTeam(user: SessionUser, teamId: string, input: { name?: string; archived?: boolean; move?: "up" | "down" }, db: Db = prisma) {
+  requireManage(user)
+  return inTx(db, async (tx) => {
+    const team = await tx.team.findFirst({ where: { id: teamId, department: { organizationId: user.organizationId } } })
+    if (!team) throw new UserInputError("Team not found.")
+    if (input.name !== undefined) {
+      const clean = input.name.trim()
+      if (!clean || clean.length > 80) throw new UserInputError("Enter a team name (max 80 characters).")
+      await tx.team.update({ where: { id: teamId }, data: { name: clean } })
+    }
+    if (input.archived !== undefined) await tx.team.update({ where: { id: teamId }, data: { archivedAt: input.archived ? new Date() : null } })
+    if (input.move) {
+      const siblings = await tx.team.findMany({ where: { departmentId: team.departmentId, archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] })
+      const i = siblings.findIndex((t) => t.id === teamId)
+      const j = input.move === "up" ? i - 1 : i + 1
+      if (i >= 0 && j >= 0 && j < siblings.length) {
+        const order = siblings.map((t) => t.id)
+        ;[order[i], order[j]] = [order[j], order[i]]
+        for (const [index, id] of order.entries()) await tx.team.update({ where: { id }, data: { sortOrder: (index + 1) * 10 } })
+      }
+    }
+    await audit(tx, user, "team.update", "team", teamId, input)
+  })
+}
+
+const previousMonthOf = (m: Month): Month => (m.month === 1 ? { year: m.year - 1, month: 12 } : { year: m.year, month: m.month - 1 })
+
+/**
+ * Recurring costs of the immediately previous month that can be carried into this month. Only the
+ * structure is offered (item, category, team, planned amount); actual income, profit and cash
+ * movements are never copied.
+ */
+export async function recurringCostPreview(user: SessionUser, m: Month, db: Db = prisma) {
+  if (!user.permissions.has("project_finance:read")) throw new UserInputError("You do not have permission to view project finance.")
+  const prev = previousMonthOf(m)
+  const rows = await db.projectCost.findMany({
+    where: { recurring: true, status: { not: "CANCELLED" }, period: { organizationId: user.organizationId, year: prev.year, month: prev.month } },
+    include: { project: { include: { department: true, client: true } }, category: true, team: true, carriedTo: { where: { period: { year: m.year, month: m.month } }, select: { id: true } } },
+    orderBy: { createdAt: "asc" },
+  })
+  return {
+    previous: `${prev.year}-${String(prev.month).padStart(2, "0")}`,
+    rows: rows.map((r) => ({
+      id: r.id,
+      item: r.description,
+      amount: r.amount.toString(),
+      currency: r.currency,
+      categoryId: r.categoryId,
+      categoryName: r.category.name,
+      departmentId: r.project.departmentId,
+      departmentName: r.project.department?.name ?? null,
+      teamId: r.teamId,
+      teamName: r.team?.name ?? null,
+      clientName: r.project.client?.name ?? null,
+      notes: r.notes,
+      present: r.carriedTo.length > 0,
+    })),
+  }
+}
+
+export type CarryCostItem = { id: string; item?: string | null; amount?: string | null; categoryId?: string | null; teamId?: string | null; recurring?: boolean; notes?: string | null }
+
+/**
+ * Carries selected recurring costs into the month as PLANNED (not yet incurred) rows. They reach the
+ * P&L only when confirmed and Cash Flow only when paid. A cost already carried is skipped, never
+ * duplicated (unique per month and source). The previous month is never changed.
+ */
+export async function carryRecurringCosts(user: SessionUser, m: Month, items: CarryCostItem[], db: Db = prisma) {
+  requireManage(user)
+  if (!Array.isArray(items) || items.length === 0) throw new UserInputError("Choose the costs to carry over.")
+  if (items.length > 300) throw new UserInputError("Too many rows at once.")
+  const prev = previousMonthOf(m)
+  let added = 0
+  let skipped = 0
+  for (const item of items) {
+    await inTx(db, async (tx) => {
+      const period = await ensurePeriod(tx, user.organizationId, m)
+      assertPeriodOpen(period, m, user)
+      const source = await tx.projectCost.findFirst({ where: { id: item.id, recurring: true, project: { organizationId: user.organizationId }, period: { year: prev.year, month: prev.month } }, include: { project: true } })
+      if (!source) throw new UserInputError("Only recurring costs of the previous month can be carried over.")
+      if (await tx.projectCost.findFirst({ where: { periodId: period.id, carriedFromId: source.id } })) {
+        skipped++
+        return
+      }
+      const amount = item.amount ? new Decimal(item.amount.replace(/[\s,]/g, "")) : new Decimal(source.amount)
+      if (!amount.isFinite() || amount.lte(0)) throw new UserInputError("Amount must be greater than zero.")
+      const category = item.categoryId ? await resolveCategory(tx, user, "cost", item.categoryId, source.project.departmentId!) : null
+      if (item.teamId && !(await tx.team.findFirst({ where: { id: item.teamId, department: { organizationId: user.organizationId } } }))) throw new UserInputError("Team not found.")
+      const fxRate = await fxRateFor(tx, user, source.currency, m)
+      const row = await tx.projectCost.create({
+        data: {
+          projectId: source.projectId,
+          periodId: period.id,
+          categoryId: category?.id ?? source.categoryId,
+          description: (item.item?.trim() || source.description).slice(0, 200),
+          status: "PLANNED",
+          amount: amount.toString(),
+          currency: source.currency,
+          fxRateToBase: fxRate.toString(),
+          baseAmount: toBase(amount, fxRate).toString(),
+          incurredDate: monthStart(m),
+          notes: item.notes !== undefined ? item.notes?.slice(0, 2000) || null : source.notes,
+          teamId: item.teamId !== undefined ? item.teamId : source.teamId,
+          recurring: item.recurring ?? true,
+          carriedFromId: source.id,
+        },
+      })
+      await audit(tx, user, "project_cost.carry_forward", "project_cost", row.id, { from: source.id, month: `${m.year}-${String(m.month).padStart(2, "0")}` })
+      added++
+    })
+  }
+  return { added, skipped }
 }

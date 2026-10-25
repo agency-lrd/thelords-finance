@@ -11,6 +11,7 @@ import { monthOfDate } from "@/lib/period"
 import { assertPeriodOpen, audit, ensurePeriod, fxRateFor, type Tx } from "./common"
 import { inTx, prisma, type Db } from "./db"
 import { accountByCode, postJournal, reverseJournal, type JournalLineInput } from "./ledger"
+import { kindOf } from "@/lib/transactions/kinds"
 
 /*
  * Manual transactions. Each type posts through a fixed double-entry template, so money movements that
@@ -81,6 +82,9 @@ export type TransactionInput = {
   externalRef?: string | null
   /** Set by the CSV/XLSX import: the batch the draft came from. */
   importBatchId?: string | null
+  /** Owner-facing kind (see lib/transactions/kinds); the accounting template stays `type`. */
+  kind?: string | null
+  teamId?: string | null
 }
 
 function need(user: SessionUser, permission: "journal:create" | "journal:post") {
@@ -118,6 +122,7 @@ async function validate(tx: Tx, user: SessionUser, input: TransactionInput) {
   await check(input.clientId, (id) => tx.client.findFirst({ where: { id, organizationId: org } }), "Client")
   await check(input.projectId, (id) => tx.project.findFirst({ where: { id, organizationId: org } }), "Project")
   await check(input.shareholderId, (id) => tx.shareholder.findFirst({ where: { id, organizationId: org } }), "Owner")
+  await check(input.teamId ?? null, (id) => tx.team.findFirst({ where: { id, department: { organizationId: org } } }), "Team")
 
   const unpaid = input.settlementStatus !== "PAID"
   if (unpaid && !SETTLEABLE.includes(input.type)) throw new UserInputError("Only revenue, expenses and asset purchases can be booked as unpaid.")
@@ -184,6 +189,8 @@ function dataOf(input: TransactionInput, description: string, fx: Decimal, base:
     dueDate: input.dueDate,
     notes: input.notes?.slice(0, 2000) || null,
     attachmentUrl: input.attachmentUrl,
+    ...(input.kind !== undefined ? { kind: input.kind } : {}),
+    ...(input.teamId !== undefined ? { teamId: input.teamId } : {}),
   }
 }
 
@@ -277,7 +284,8 @@ async function journalLines(tx: Tx, user: SessionUser, t: Prisma.TransactionGetP
     case "OWNER_CONTRIBUTION":
       return [{ accountId: cash!, debit: B }, { accountId: await accountByCode(tx, org, "3000"), credit: B }, ...(await feeLines())]
     case "OWNER_WITHDRAWAL":
-      return [{ accountId: await accountByCode(tx, org, "3200"), debit: B }, { accountId: cash!, credit: B }, ...(await feeLines())]
+      // Distributions by default; a capital return reduces owner capital (debitAccountId = 3000).
+      return [{ accountId: t.debitAccountId ?? (await accountByCode(tx, org, "3200")), debit: B }, { accountId: cash!, credit: B }, ...(await feeLines())]
     case "LOAN_RECEIVED":
       return [{ accountId: cash!, debit: B }, { accountId: t.creditAccountId ?? (await accountByCode(tx, org, "2650")), credit: B }, ...(await feeLines())]
     case "LOAN_REPAYMENT":
@@ -414,6 +422,7 @@ export async function listTransactions(user: SessionUser, filters: TransactionFi
       client: { select: { name: true } },
       project: { select: { name: true } },
       shareholder: { select: { name: true } },
+      team: { select: { name: true } },
       period: { select: { year: true, month: true, status: true } },
       journalEntry: { select: { entryNumber: true } },
     },
@@ -450,6 +459,9 @@ export async function listTransactions(user: SessionUser, filters: TransactionFi
     project: t.project?.name ?? null,
     shareholderId: t.shareholderId,
     shareholder: t.shareholder?.name ?? null,
+    kind: kindOf(t),
+    teamId: t.teamId,
+    team: t.team?.name ?? null,
     counterparty: t.counterparty,
     direction: t.direction,
     settlementStatus: t.settlementStatus,
@@ -473,12 +485,18 @@ export async function transactionOptions(user: SessionUser, db: Db = prisma) {
     db.project.findMany({ where: { organizationId: org, billingModel: { not: "INTERNAL" } }, orderBy: { name: "asc" } }),
     db.shareholder.findMany({ where: { organizationId: org, archivedAt: null }, orderBy: { name: "asc" } }),
   ])
+  const [teams, clientCategories] = [
+    await db.team.findMany({ where: { archivedAt: null, department: { organizationId: org } }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+    await db.clientCategory.findMany({ where: { organizationId: org, archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+  ]
   return {
     accounts: accounts.map((a) => ({ id: a.id, name: a.name, currency: a.currency, type: a.type })),
     categories: categories.map((c) => ({ id: c.id, name: c.parent ? `${c.parent.name} › ${c.name}` : c.name, kind: c.kind, code: c.code })),
     ledgerAccounts: ledgerAccounts.map((a) => ({ id: a.id, code: a.code, name: a.name, type: a.type, subtype: a.subtype })),
     departments: departments.map((d) => ({ id: d.id, name: d.name })),
-    clients: clients.map((c) => ({ id: c.id, name: c.name })),
+    clients: clients.map((c) => ({ id: c.id, name: c.name, categoryId: c.categoryId })),
+    teams: teams.map((t) => ({ id: t.id, name: t.name, departmentId: t.departmentId })),
+    clientCategories: clientCategories.map((c) => ({ id: c.id, name: c.name })),
     projects: projects.map((p) => ({ id: p.id, name: p.name })),
     shareholders: shareholders.map((s) => ({ id: s.id, name: s.name })),
   }
