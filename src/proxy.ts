@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr"
 import { NextResponse, type NextRequest } from "next/server"
 
-const PUBLIC_PATHS = ["/login", "/onboarding", "/auth/", "/api/health"]
+const PUBLIC_PATHS = ["/login", "/onboarding", "/auth/", "/api/health", "/forgot-password", "/reset-password"]
 
 /**
  * Refreshes the Supabase session cookie and sends signed-out visitors to /login.
@@ -9,8 +9,16 @@ const PUBLIC_PATHS = ["/login", "/onboarding", "/auth/", "/api/health"]
  * their permissions on the server (src/lib/auth/session.ts).
  */
 export async function proxy(request: NextRequest) {
-  const { pathname, search } = request.nextUrl
+  const { pathname, search, searchParams } = request.nextUrl
   const isPublic = PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(path))
+
+  // An email link that landed on another page (e.g. the Site URL "/") with a code or token: hand it to
+  // the auth callback instead of losing it on the way to /login.
+  if (!pathname.startsWith("/auth/") && (searchParams.has("code") || searchParams.has("token_hash"))) {
+    const callback = new URL("/auth/callback", request.url)
+    searchParams.forEach((value, key) => callback.searchParams.set(key, value))
+    return NextResponse.redirect(callback)
+  }
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY

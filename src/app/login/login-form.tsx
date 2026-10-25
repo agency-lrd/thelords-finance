@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useActionState } from "react"
 
 import { FormMessage } from "@/components/shared/action-form"
@@ -27,6 +28,7 @@ export function LoginForm({ next, configured }: { next: string; configured: bool
         <p className="text-xs text-muted-foreground">Sign-in is not configured yet. Add the Supabase publishable key.</p>
       )}
       <FormMessage state={state} />
+      <Link href="/forgot-password" className="text-center text-sm text-primary hover:underline">Забыли пароль?</Link>
     </form>
   )
 }

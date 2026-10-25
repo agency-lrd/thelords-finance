@@ -7,6 +7,7 @@ import { onboardingOpen } from "@/lib/auth/session"
 import { getDictionary } from "@/lib/i18n/server"
 import { isSupabaseConfigured } from "@/lib/supabase/env"
 
+import { LinkNotice } from "./link-notice"
 import { LoginForm } from "./login-form"
 
 export const metadata: Metadata = { title: "Sign in" }
@@ -41,7 +42,12 @@ export default function LoginPage({ searchParams }: PageProps<"/login">) {
 async function LoginFormWithNext({ searchParams }: { searchParams: PageProps<"/login">["searchParams"] }) {
   const params = await searchParams
   const next = typeof params.next === "string" ? params.next : "/"
-  return <LoginForm next={next} configured={isSupabaseConfigured()} />
+  return (
+    <>
+      <LinkNotice error={typeof params.error === "string" ? params.error : null} passwordUpdated={params.password === "updated"} />
+      <LoginForm next={next} configured={isSupabaseConfigured()} />
+    </>
+  )
 }
 
 async function Footer() {
