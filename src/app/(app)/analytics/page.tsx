@@ -9,6 +9,9 @@ import { departmentPnl } from "@/lib/reports/ledger"
 import { parseRange, range } from "@/lib/reports/periods"
 
 import { AnalyticsView } from "./analytics-view"
+import { clientReport } from "@/lib/data/cash-register"
+
+import { ClientReport } from "./client-report"
 import { DepartmentAnalytics } from "./department-analytics"
 
 export const metadata: Metadata = { title: "Аналитика" }
@@ -30,7 +33,8 @@ async function Analytics({ searchParams }: { searchParams: PageProps<"/analytics
   const now = new Date()
   const m = parseRange(typeof params.m === "string" ? params.m : null, range("month", now.getUTCFullYear(), now.getUTCMonth() + 1))
   const month = m.kind === "month" ? { year: m.year, month: m.index } : { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 }
-  const [data, departments, costs, byDepartment] = await Promise.all([monthlyAnalytics(user, year), departmentPnl(user, range("year", year)), expenseStructure(user, range("year", year)), departmentAnalytics(user, month)])
+  const monthRange = range("month", month.year, month.month)
+  const [data, departments, costs, byDepartment, clients] = await Promise.all([monthlyAnalytics(user, year), departmentPnl(user, range("year", year)), expenseStructure(user, range("year", year)), departmentAnalytics(user, month), clientReport(user, monthRange.from, monthRange.to)])
   return (
     <>
     <AnalyticsView
@@ -43,6 +47,9 @@ async function Analytics({ searchParams }: { searchParams: PageProps<"/analytics
     />
     <div className="mt-10">
       <DepartmentAnalytics locale={locale} currency={user.baseCurrency} data={byDepartment} />
+    </div>
+    <div className="mt-10">
+      <ClientReport locale={locale} currency={user.baseCurrency} data={clients} />
     </div>
     </>
   )
