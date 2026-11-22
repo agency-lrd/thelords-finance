@@ -104,6 +104,23 @@ async function main() {
       assert.equal(octRows.reduce((a, r) => a + Number(r.approved), 0), 6000)
       assert.equal(await prisma.payrollItem.count({ where: { payrollRun: { period: { year: 2026, month: 10 } } } }), 6)
     })
+
+    await step("8-11 (colors). a position color shows for every employee with it, persists, never touches pay", async () => {
+      const im = await id("Influencer Manager")
+      const payBefore = JSON.stringify((await sheet.getSheet(admin, oct, prisma)).rows.map((r) => [r.employeeId, r.approved, r.payable]))
+      await positions.updatePosition(admin, im, { color: "ec4899" }, prisma)
+      for (const m of [oct, nov]) {
+        const list = (await sheet.getSheet(admin, m, prisma)).rows.filter((r) => r.positionId === im)
+        assert.ok(list.length > 0)
+        assert.ok(list.every((r) => r.positionColor === "#EC4899"), "same color in every month and department")
+      }
+      assert.equal((await pos()).find((p) => p.id === im)!.color, "#EC4899", "saved on the position (persists)")
+      assert.equal(JSON.stringify((await sheet.getSheet(admin, oct, prisma)).rows.map((r) => [r.employeeId, r.approved, r.payable])), payBefore, "approved pay unchanged")
+      await assert.rejects(() => positions.updatePosition(admin, im, { color: "pink" }, prisma), /HEX/)
+      await positions.updatePosition(admin, im, { color: null }, prisma)
+      assert.equal((await sheet.getSheet(admin, nov, prisma)).rows.find((r) => r.positionId === im)!.positionColor, null, "reset to default")
+      assert.equal(await prisma.position.count({ where: { organizationId: org.id } }), 31, "colors never create records")
+    })
   } finally {
     summary()
     await stop()

@@ -309,3 +309,65 @@ function Block(props: {
     </section>
   )
 }
+
+/**
+ * "Общий": the four main departments side by side and in total, from the same records as each
+ * department's blocks (confirmed rows; payroll from the sheet). Read-only: nothing is created. A
+ * department's name opens its tab.
+ */
+export function CombinedSummary(props: { locale: Locale; baseCurrency: string; ledger: Ledger; mains: { id: string; name: string }[]; payrollByDepartment: Record<string, string> }) {
+  const ru = props.locale === "ru"
+  const money = (v: Decimal) => formatAmount(v.toString(), props.baseCurrency, props.locale)
+  const confirmed = (list: Row[]) => list.filter((r) => r.confirmed).reduce((a, r) => a.add(r.baseAmount), new Decimal(0))
+  const pending = (list: Row[]) => list.filter((r) => !r.confirmed).reduce((a, r) => a.add(r.baseAmount), new Decimal(0))
+  const rows = props.mains.map((d) => {
+    const income = props.ledger.income.filter((r) => r.departmentId === d.id)
+    const costs = props.ledger.costs.filter((r) => r.departmentId === d.id)
+    const recurring = confirmed(costs.filter((c) => c.recurring))
+    const additional = confirmed(costs.filter((c) => !c.recurring))
+    const revenue = confirmed(income)
+    const payroll = new Decimal(props.payrollByDepartment[d.id] ?? 0)
+    return { id: d.id, name: d.name, revenue, recurring, additional, payroll, result: revenue.sub(recurring).sub(additional).sub(payroll), pending: pending(income).add(pending(costs)) }
+  })
+  const sum = (k: "revenue" | "recurring" | "additional" | "payroll" | "result" | "pending") => rows.reduce((a, r) => a.add(r[k]), new Decimal(0))
+  const open = (id: string) => {
+    const next = new URLSearchParams(window.location.search)
+    next.set("dept", id)
+    window.history.replaceState(null, "", `${window.location.pathname}?${next.toString()}`)
+  }
+  const heads = ru ? ["Отдел", "Доходы", "Постоянные расходы", "Дополнительные расходы", "Зарплаты", "Результат"] : ["Department", "Income", "Recurring costs", "Additional costs", "Payroll", "Result"]
+  return (
+    <section className="mt-10 flex flex-col gap-3">
+      <div className="max-w-3xl">
+        <h2 className="font-display text-2xl font-black uppercase italic">{ru ? "Общий результат отделов" : "All departments"}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">{ru ? "Подтверждённые доходы и расходы четырёх отделов и их зарплаты (из таблицы выше, один раз). PROFIT сотрудников — показатель KPI, в доходы не входит. Нажмите на отдел, чтобы открыть его записи." : "Confirmed income and costs of the four departments and their payroll (from the table above, once). Employees' PROFIT is a KPI figure, not income. Click a department to open its records."}</p>
+      </div>
+      <div className="overflow-x-auto rounded-2xl bg-card/50 ring-1 ring-foreground/10">
+        <table className="w-full min-w-[760px] table-fixed text-sm">
+          <thead className="bg-white/[0.03] text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
+            <tr>{heads.map((h, i) => <th key={h} className={cn("px-3 py-2.5 font-medium", i ? "text-right" : "text-left")}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-border/60">
+                <td className="px-3 py-2"><button type="button" onClick={() => open(r.id)} className="font-medium hover:text-primary hover:underline">{r.name}</button></td>
+                <td className="px-3 py-2 text-right font-mono">{money(r.revenue)}</td>
+                <td className="px-3 py-2 text-right font-mono">{money(r.recurring)}</td>
+                <td className="px-3 py-2 text-right font-mono">{money(r.additional)}</td>
+                <td className="px-3 py-2 text-right font-mono">{money(r.payroll)}</td>
+                <td className={cn("px-3 py-2 text-right font-mono font-semibold", r.result.isNegative() && "text-red-300")}>{money(r.result)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-primary/40 bg-[#3a0d29] font-semibold text-white">
+              <td className="px-3 py-2.5">{ru ? "Итого" : "Total"}</td>
+              {(["revenue", "recurring", "additional", "payroll", "result"] as const).map((k) => <td key={k} className="px-3 py-2.5 text-right font-mono">{money(sum(k))}</td>)}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {!sum("pending").isZero() && <p className="text-[11px] text-amber-300">{ru ? `Ещё не подтверждено (не входит в итоги): ${money(sum("pending"))}` : `Not confirmed yet (not in the totals): ${money(sum("pending"))}`}</p>}
+    </section>
+  )
+}

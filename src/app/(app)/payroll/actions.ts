@@ -124,6 +124,7 @@ const RU: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/^(.+) is not approved\.$/, (m) => `${m[1]} не утверждён.`],
   [/Salary payments are already recorded for (.+)\. Approval/, (m) => `За ${m[1]} уже записаны выплаты зарплаты. Отменить утверждение можно только до первой выплаты: сначала сторнируйте выплаты.`],
   [/From November 2026 choose one of the four main departments/, "С ноября 2026 выберите один из четырёх основных отделов: Influence, AI Production, Crypto Marketing или Traffic Affiliate. Остальные функции — это должности."],
+  [/Color must be a HEX value/, "Цвет должен быть в формате HEX, например #EC4899."],
   [/Position not found/, "Должность не найдена или в архиве."],
   [/A position with this name already exists/, "Такая должность уже есть."],
   [/This position exists in the archive/, "Такая должность есть в архиве — восстановите её."],
@@ -640,13 +641,14 @@ export async function createPositionAction(name: string, nameRu: string | null):
   }
 }
 
-export async function updatePositionAction(id: string, input: { name?: string; nameRu?: string | null; archived?: boolean; move?: "up" | "down" }): Promise<CellResult> {
+export async function updatePositionAction(id: string, input: { name?: string; nameRu?: string | null; archived?: boolean; move?: "up" | "down"; color?: string | null }): Promise<CellResult> {
   try {
     const clean = {
       ...(typeof input.name === "string" ? { name: input.name } : {}),
       ...(input.nameRu === null || typeof input.nameRu === "string" ? { nameRu: input.nameRu } : {}),
       ...(typeof input.archived === "boolean" ? { archived: input.archived } : {}),
       ...(input.move === "up" || input.move === "down" ? { move: input.move } : {}),
+      ...(input.color === null || typeof input.color === "string" ? { color: input.color } : {}),
     }
     await updatePosition(await authorize("employee:manage"), id, clean)
     return done()

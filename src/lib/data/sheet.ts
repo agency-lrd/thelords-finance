@@ -235,6 +235,8 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       /** Position (job title) for this month; dated on the assignment, frozen in approved snapshots. */
       positionId: assignment?.positionId ?? null,
       positionName: assignment?.position?.name ?? null,
+      /** The position's display color (directory setting; visual only). */
+      positionColor: null as string | null,
       currency: salary?.currency ?? user.baseCurrency,
       payBasis: salary?.payBasis ?? "MONTHLY",
       fix: str(salary?.baseAmount),
@@ -289,7 +291,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
   // The frozen assignment is a department id: a department renamed later shows its current name.
   const departmentNames = frozen ? new Map((await db.department.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true } })).map((d) => [d.id, d.name])) : new Map<string, string>()
   // Positions: current names and order (a renamed or reordered position shows its current name/order).
-  const positions = new Map((await db.position.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true, sortOrder: true } })).map((p) => [p.id, p]))
+  const positions = new Map((await db.position.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true, sortOrder: true, color: true } })).map((p) => [p.id, p]))
   for (const [i, r] of rows.entries()) {
     const member = employees.find((e) => e.id === r.employeeId)?.monthMemberships[0]
     const snap = frozen ? (member?.snapshot as MonthSnapshot | null) : null
@@ -302,6 +304,9 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       rows[i] = { ...r, ...(frozenRow as unknown as Partial<typeof r>), ...legacy, ...position, departmentName: ((snap.departmentId && departmentNames.get(snap.departmentId)) || snap.departmentName) as typeof r.departmentName, stale: false }
     }
   }
+
+  // Colors come from the position directory, so a color change shows everywhere at once.
+  for (const r of rows) r.positionColor = (r.positionId && positions.get(r.positionId)?.color) || null
 
   // Inside a department, employees follow the position order (no position last: "Без должности"), then
   // team leads, then name; the order never affects totals.

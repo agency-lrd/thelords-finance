@@ -11,7 +11,29 @@ import type { SheetAdminTexts } from "@/lib/i18n/sheet-admin"
 import { createPositionAction, updatePositionAction } from "./actions"
 import { Panel } from "./sheet-admin"
 
-type Position = { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number }
+type Position = { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number; color: string | null }
+
+/** Palette tuned for the dark theme (readable as a dot and a tinted badge). */
+export const POSITION_PALETTE = ["#EC4899", "#F472B6", "#A855F7", "#8B5CF6", "#6366F1", "#3B82F6", "#22D3EE", "#14B8A6", "#22C55E", "#84CC16", "#EAB308", "#F59E0B", "#F97316", "#EF4444", "#94A3B8", "#E5E7EB"]
+
+function ColorPicker(props: { value: string | null; labels: { reset: string; custom: string }; onPick: (color: string | null) => void }) {
+  const [hex, setHex] = useState(props.value ?? "")
+  return (
+    <div className="flex w-64 flex-col gap-2 rounded-xl border border-primary/30 bg-[#110d12] p-3 shadow-2xl">
+      <div className="grid grid-cols-8 gap-1.5">
+        {POSITION_PALETTE.map((c) => (
+          <button key={c} type="button" title={c} aria-label={c} onClick={() => props.onPick(c)} className={cn("size-6 rounded-full ring-offset-2 ring-offset-[#110d12]", props.value?.toUpperCase() === c && "ring-2 ring-white")} style={{ backgroundColor: c }} />
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input type="color" value={/^#[0-9a-f]{6}$/i.test(hex) ? hex : "#EC4899"} onChange={(e) => setHex(e.target.value.toUpperCase())} className="h-7 w-9 cursor-pointer rounded border border-border bg-transparent" aria-label={props.labels.custom} />
+        <Input value={hex} onChange={(e) => setHex(e.target.value)} placeholder="#EC4899" maxLength={7} className="h-7 flex-1 font-mono text-xs" aria-label="HEX" />
+        <Button size="sm" variant="outline" className="h-7" disabled={!/^#?[0-9a-f]{6}$/i.test(hex)} onClick={() => props.onPick(hex.startsWith("#") ? hex : `#${hex}`)}>OK</Button>
+      </div>
+      <button type="button" onClick={() => props.onPick(null)} className="text-left text-[11px] text-muted-foreground hover:text-primary">{props.labels.reset}</button>
+    </div>
+  )
+}
 
 /** The position directory: add, rename (also Russian name), reorder, archive and restore. */
 export function PositionsManager(props: { t: SheetAdminTexts; positions: Position[]; canManage: boolean; onChanged: () => void; onClose: () => void }) {
@@ -21,6 +43,7 @@ export function PositionsManager(props: { t: SheetAdminTexts; positions: Positio
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
+  const [picking, setPicking] = useState<string | null>(null)
   const active = props.positions.filter((p) => !p.archived)
   const archived = props.positions.filter((p) => p.archived)
 
@@ -40,6 +63,22 @@ export function PositionsManager(props: { t: SheetAdminTexts; positions: Positio
   const row = (p: Position, index: number, list: Position[]) => (
     <li key={p.id} className={cn("group flex items-center gap-2 border-t border-border/40 py-1.5 text-sm first:border-0", p.archived && "text-muted-foreground")}>
       <span className="w-6 text-right font-mono text-[11px] text-muted-foreground">{p.archived ? "–" : index + 1}</span>
+      <span className="relative">
+        <button
+          type="button"
+          disabled={!props.canManage}
+          onClick={() => setPicking(picking === p.id ? null : p.id)}
+          title={p.color ?? P.defaultColor}
+          aria-label={P.color}
+          className="flex size-5 items-center justify-center rounded-full border border-border"
+          style={p.color ? { backgroundColor: p.color, borderColor: p.color } : undefined}
+        />
+        {picking === p.id && (
+          <span className="absolute top-7 left-0 z-50">
+            <ColorPicker value={p.color} labels={{ reset: P.resetColor, custom: P.customColor }} onPick={(color) => { setPicking(null); void run(p.id, () => updatePositionAction(p.id, { color })) }} />
+          </span>
+        )}
+      </span>
       <span className="min-w-0 flex-1 truncate">
         {p.name}
         {p.nameRu && <span className="ml-2 text-[11px] text-muted-foreground">{p.nameRu}</span>}

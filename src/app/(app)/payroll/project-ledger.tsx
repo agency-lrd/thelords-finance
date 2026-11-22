@@ -17,7 +17,7 @@ import { addLedgerAction, confirmLedgerAction, deleteLedgerAction, settleLedgerA
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
 import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, mainDepartmentTabs } from "@/lib/department-view"
 
-import { DepartmentFinance } from "./department-finance"
+import { CombinedSummary, DepartmentFinance } from "./department-finance"
 import { CarryCostsButton } from "./recurring-costs"
 
 type Ledger = Awaited<ReturnType<typeof getProjectLedger>>
@@ -54,7 +54,7 @@ export function ProjectLedger(props: Props) {
   const mains = mainDepartmentTabs(ledger.departments)
   const mainIds = new Set(mains.map((d) => d.id))
   const requested = params.get(DEPARTMENT_PARAM)
-  const selected = deptView ? (requested && mainIds.has(requested) ? requested : (mains[0]?.id ?? ALL_DEPARTMENTS)) : ALL_DEPARTMENTS
+  const selected = deptView && requested && mainIds.has(requested) ? requested : ALL_DEPARTMENTS
   // Income and costs of this month still in an old department: listed to move explicitly, never hidden.
   const legacy = deptView && mains.length ? [...ledger.income, ...ledger.costs].filter((r) => !r.departmentId || !mainIds.has(r.departmentId)) : []
 
@@ -79,6 +79,16 @@ export function ProjectLedger(props: Props) {
     { income: new Decimal(0), costs: new Decimal(0), payroll: new Decimal(0), value: new Decimal(0) },
   )
   const maxAbs = contribution.reduce((m, r) => Decimal.max(m, r.value.abs()), new Decimal(1))
+
+  if (deptView && selected === ALL_DEPARTMENTS && mains.length) {
+    return (
+      <>
+        {legacy.length > 0 && <LegacyRecords locale={locale} rows={legacy} mains={mains} editable={editable} departments={ledger.departments} onError={setError} onDone={() => { setError(null); refresh() }} />}
+        {error && <p role="alert" className="mt-6 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-red-200">{error}</p>}
+        <CombinedSummary locale={locale} baseCurrency={baseCurrency} ledger={ledger} mains={mains} payrollByDepartment={props.payrollByDepartment} />
+      </>
+    )
+  }
 
   if (selected !== ALL_DEPARTMENTS && ledger.departments.some((d) => d.id === selected)) {
     return (

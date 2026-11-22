@@ -2275,6 +2275,8 @@ model Position {
   name           String
   nameRu         String?   @map("name_ru")
   sortOrder      Int       @default(0) @map("sort_order")
+  /// Display color (#RRGGBB) shown with the position on the sheet; null = default.
+  color          String?   @db.VarChar(7)
   archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 

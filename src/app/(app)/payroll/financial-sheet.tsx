@@ -63,7 +63,7 @@ type Props = {
   perms: Perms
   period: { status: "OPEN" | "CLOSING" | "CLOSED" | "LOCKED"; closedAt: string | null; closedBy: string | null; draftEntries: number }
   /** Position directory in its order (active and archived). */
-  positions: { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number }[]
+  positions: { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number; color: string | null }[]
 }
 
 type Undo = { employeeId: string; col: ColKey; before: string; after: string }
@@ -167,7 +167,8 @@ export function FinancialSheet(props: Props) {
   const tabIds = useMemo(() => new Set(tabs.map((d) => d.id)), [tabs])
   const urlDept = searchParams.get(DEPARTMENT_PARAM)
   const [deptFilterState, setDeptFilterState] = useState("")
-  const deptFilter = deptView ? (urlDept && tabIds.has(urlDept) ? urlDept : (tabs[0]?.id ?? "")) : deptFilterState
+  // "Общий" (dept=all, the default) is a combined view of the same records, not a department.
+  const deptFilter = deptView ? (urlDept && tabIds.has(urlDept) ? urlDept : "") : deptFilterState
   // People still in an old department this month: listed for an explicit choice, never moved by a guess.
   const legacyRows = useMemo(() => (deptView && tabs.length ? rows.filter((r) => !r.departmentId || !tabIds.has(r.departmentId)) : []), [deptView, tabs.length, rows, tabIds])
   // Department pickers from November offer the four main departments only.
@@ -268,12 +269,16 @@ export function FinancialSheet(props: Props) {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return rows.filter(
+    const list = rows.filter(
       (r) =>
         (!deptFilter || (deptFilter === "none" ? !r.departmentId : r.departmentId === deptFilter)) &&
         (!q || [r.name, r.position, r.notes, r.wallet?.masked, r.departmentName].some((v) => v?.toLowerCase().includes(q))),
     )
-  }, [rows, deptFilter, query])
+    if (!deptView || deptFilter) return list
+    // "Общий": departments in tab order (old departments after), positions order kept inside each.
+    const rank = new Map(tabs.map((d, i) => [d.id, i]))
+    return list.map((r, i) => ({ r, i })).sort((a, b) => (rank.get(a.r.departmentId ?? "") ?? 99) - (rank.get(b.r.departmentId ?? "") ?? 99) || a.i - b.i).map((x) => x.r)
+  }, [rows, deptFilter, query, deptView, tabs])
 
   const key = (row: SheetRow, col: ColKey) => `${row.employeeId}:${col}`
 
@@ -636,7 +641,7 @@ export function FinancialSheet(props: Props) {
 
   // Department view: the grid keeps ONE height for the whole month (sized for the largest department,
   // capped by the screen), so switching departments never moves the blocks underneath.
-  const stableHeight = useMemo(() => (deptView ? stableGridHeight(rows.map((r) => r.departmentId)) : undefined), [deptView, rows])
+  const stableHeight = useMemo(() => (deptView ? stableGridHeight(rows.map((r) => r.departmentId), { combined: true }) : undefined), [deptView, rows])
   const tableWidth = cols.reduce((sum, c) => sum + c.width, 0)
   const unconfirmed = rows.filter((r) => !r.confirmed || r.stale).length
 
@@ -764,7 +769,7 @@ export function FinancialSheet(props: Props) {
 
       {deptView && tabs.length > 0 && (
         <nav aria-label={locale === "ru" ? "Отделы" : "Departments"} className="flex flex-wrap gap-2">
-          {tabs.map((d) => ({ id: d.id, name: d.name })).map((d) => {
+          {[{ id: "", name: locale === "ru" ? "Общий" : "All" }, ...tabs.map((d) => ({ id: d.id, name: d.name }))].map((d) => {
             const active = deptFilter === d.id
             const count = d.id ? rows.filter((r) => r.departmentId === d.id).length : rows.length
             return (
@@ -1035,7 +1040,7 @@ export function FinancialSheet(props: Props) {
       </div>
       {grand.excluded > 0 && <p className="text-xs text-amber-300/80">{fill(t.sheet.mixedCurrency, { n: grand.excluded })}</p>}
 
-      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter} positions={props.positions} labels={{ position: A.positions.position, kpi: A.positions.kpi, commission: A.positions.commission, wallet: A.positions.wallet, none: A.positions.none }} monthKey={monthKey} departments={pickerDepartments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
+      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter || tabs[0]?.id} positions={props.positions} labels={{ position: A.positions.position, kpi: A.positions.kpi, commission: A.positions.commission, wallet: A.positions.wallet, none: A.positions.none }} monthKey={monthKey} departments={pickerDepartments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
 
       {termsFor && (
         <TermsDialog
@@ -1178,6 +1183,8 @@ function CellView(props: {
     case "name":
       return (
         <span className="flex items-center gap-2">
+          {/* Position color as a thin indicator beside the name (no full-row background). */}
+          <span aria-hidden className="h-4 w-1 shrink-0 rounded-full" style={{ backgroundColor: row.positionColor ?? "transparent" }} />
           <span className="truncate">{raw}</span>
           {row.isTeamLead && <span className="rounded bg-primary/20 px-1 text-[10px] font-bold text-primary">ТЛ</span>}
           {row.status !== "ACTIVE" && <span className="text-[10px] uppercase text-muted-foreground">{t.sheet.employeeStatus[row.status as keyof Dictionary["sheet"]["employeeStatus"]]}</span>}
@@ -1201,7 +1208,18 @@ function CellView(props: {
         </span>
       )
     case "positionId":
-      return row.positionName ? <span className="block truncate">{row.positionName}</span> : <span className="text-[11px] text-muted-foreground">{props.noPositionLabel}</span>
+      // A subtle badge: colored dot and border, tinted background, readable light text.
+      return row.positionName ? (
+        <span
+          className="inline-flex max-w-full items-center gap-1.5 truncate rounded-full border px-2 py-0.5 text-[11px] font-medium text-foreground"
+          style={row.positionColor ? { borderColor: `${row.positionColor}80`, backgroundColor: `${row.positionColor}1F` } : undefined}
+        >
+          <span className="size-2 shrink-0 rounded-full bg-muted-foreground" style={row.positionColor ? { backgroundColor: row.positionColor } : undefined} />
+          <span className="truncate">{row.positionName}</span>
+        </span>
+      ) : (
+        <span className="text-[11px] text-muted-foreground">{props.noPositionLabel}</span>
+      )
     case "department":
       return row.departmentName ? (
         <span className={cn("inline-flex max-w-full items-center truncate rounded-full px-2.5 py-0.5 text-[11px] font-semibold", props.palette.chip)}>{row.departmentName}</span>

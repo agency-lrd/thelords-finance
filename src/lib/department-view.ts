@@ -33,17 +33,20 @@ export function orderDepartmentTabs<T extends { name: string }>(departments: T[]
 
 /** Row heights of the sheet grid (px): header, data rows, department subtotal, grand total. */
 export const GRID_ROW = 36
+const GRID_SUBTOTAL = 32
 const GRID_HEAD = 40
 const GRID_FOOT = 40
 
 /**
- * One grid height for the whole month in the department view: sized for the largest department (plus
- * its subtotal row), never below 320 px. The page caps it at the screen height and the grid scrolls
- * inside, so switching between departments with 0, 2, 10 or 30 people never moves what is below.
+ * One grid height for the whole month in the department view, sized for the tallest view: the largest
+ * department (its rows + subtotal) or the combined "Общий" view (all rows + one subtotal per
+ * department), never below 320 px. The page caps it at the screen height and the grid scrolls inside,
+ * so switching between "Общий" and departments with 0, 2, 10 or 30 people never moves what is below.
  */
-export function stableGridHeight(departmentIds: (string | null)[]) {
+export function stableGridHeight(departmentIds: (string | null)[], options: { combined?: boolean } = {}) {
   const counts = new Map<string, number>()
   for (const id of departmentIds) counts.set(id ?? "none", (counts.get(id ?? "none") ?? 0) + 1)
-  const largest = Math.max(departmentIds.length === 0 ? 0 : 1, ...counts.values())
-  return Math.max(320, GRID_HEAD + (largest + 1) * GRID_ROW + GRID_FOOT + 2)
+  const largestDepartment = departmentIds.length === 0 ? 0 : Math.max(...counts.values()) * GRID_ROW + GRID_SUBTOTAL
+  const combined = options.combined ? departmentIds.length * GRID_ROW + counts.size * GRID_SUBTOTAL : 0
+  return Math.max(320, GRID_HEAD + Math.max(largestDepartment, combined) + GRID_FOOT + 2)
 }

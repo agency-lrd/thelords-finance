@@ -110,6 +110,17 @@ async function main() {
       assert.deepEqual((await rows(nov)).filter((r) => !r.departmentId || !main.has(r.departmentId)).map((r) => r.name), [])
       assert.equal(JSON.stringify(await rows(oct)), octSnapshot, "October unchanged")
     })
+
+    await step("Общий: every employee once; department subtotals add up to the overall total; nothing is created", async () => {
+      const before = await prisma.payrollMonthEmployee.count()
+      const list = await rows(nov)
+      assert.equal(new Set(list.map((r) => r.employeeId)).size, list.length, "no employee twice")
+      const byDept = new Map<string, number>()
+      for (const r of list) byDept.set(r.departmentId ?? "none", (byDept.get(r.departmentId ?? "none") ?? 0) + Number(r.payable))
+      const subtotals = [...byDept.values()].reduce((a, v) => a + v, 0)
+      assert.equal(subtotals, list.reduce((a, r) => a + Number(r.payable), 0))
+      assert.equal(await prisma.payrollMonthEmployee.count(), before, "viewing never writes")
+    })
   } finally {
     summary()
     await stop()

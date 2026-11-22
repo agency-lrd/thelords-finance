@@ -30,7 +30,15 @@ const cleanName = (raw: string, label = "Position name") => {
   return name
 }
 
-export type PositionRow = { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number }
+export type PositionRow = { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number; color: string | null }
+
+/** #RRGGBB or null (default). */
+export const normalizeColor = (raw: string | null | undefined) => {
+  if (raw === null || raw === undefined || raw.trim() === "") return null
+  const v = raw.trim().startsWith("#") ? raw.trim() : `#${raw.trim()}`
+  if (!/^#[0-9a-f]{6}$/i.test(v)) throw new UserInputError("Color must be a HEX value like #EC4899.")
+  return v.toUpperCase()
+}
 
 /** The directory in its order. An organization without positions gets the defaults (idempotent). */
 export async function listPositions(user: SessionUser, db: Db = prisma): Promise<PositionRow[]> {
@@ -43,7 +51,7 @@ export async function listPositions(user: SessionUser, db: Db = prisma): Promise
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: { _count: { select: { assignments: true } } },
   })
-  return rows.map((p) => ({ id: p.id, name: p.name, nameRu: p.nameRu, sortOrder: p.sortOrder, archived: !!p.archivedAt, employees: p._count.assignments }))
+  return rows.map((p) => ({ id: p.id, name: p.name, nameRu: p.nameRu, sortOrder: p.sortOrder, archived: !!p.archivedAt, employees: p._count.assignments, color: p.color }))
 }
 
 export async function createPosition(user: SessionUser, input: { name: string; nameRu?: string | null }, db: Db = prisma) {
@@ -59,7 +67,7 @@ export async function createPosition(user: SessionUser, input: { name: string; n
   })
 }
 
-export async function updatePosition(user: SessionUser, id: string, input: { name?: string; nameRu?: string | null; archived?: boolean; move?: "up" | "down" }, db: Db = prisma) {
+export async function updatePosition(user: SessionUser, id: string, input: { name?: string; nameRu?: string | null; archived?: boolean; move?: "up" | "down"; color?: string | null }, db: Db = prisma) {
   requireManage(user)
   return inTx(db, async (tx) => {
     const position = await tx.position.findFirst({ where: { id, organizationId: user.organizationId } })
@@ -72,6 +80,8 @@ export async function updatePosition(user: SessionUser, id: string, input: { nam
     }
     if (input.nameRu !== undefined) await tx.position.update({ where: { id }, data: { nameRu: input.nameRu?.trim().slice(0, 80) || null } })
     if (input.archived !== undefined) await tx.position.update({ where: { id }, data: { archivedAt: input.archived ? new Date() : null } })
+    // Purely visual: never touches employees, payroll or history.
+    if (input.color !== undefined) await tx.position.update({ where: { id }, data: { color: normalizeColor(input.color) } })
     if (input.move) {
       const list = await tx.position.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }], select: { id: true } })
       const i = list.findIndex((p) => p.id === id)
