@@ -45,7 +45,7 @@ async function main() {
       deptId = d.id
       await assert.rejects(() => adminOps.createSheetDepartment(admin, { name: "creative lab", color: null, costClassification: "OPERATING_EXPENSE" }, prisma), /already exists/)
       const list = await adminOps.listSheetDepartments(admin, sep, prisma)
-      assert.deepEqual(list.find((x) => x.id === deptId), { id: deptId, name: "Creative Lab", color: "teal", archived: false, employees: 0, hasHistory: false })
+      assert.deepEqual(list.find((x) => x.id === deptId), { id: deptId, name: "Creative Lab", color: "teal", archived: false, mainOrder: null, employees: 0, hasHistory: false })
     })
 
     await step("4. rename the department: the new name shows everywhere, the id stays", async () => {
