@@ -47,7 +47,7 @@ export async function getProjectLedger(user: SessionUser, m: Month, db: Db = pri
   const departments = await db.department.findMany({
     where: { organizationId: user.organizationId, archivedAt: null },
     include: { teams: { where: { archivedAt: null }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } },
-    orderBy: { name: "asc" },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   })
   const income = await db.projectIncome.findMany({
     where: periodWhere,

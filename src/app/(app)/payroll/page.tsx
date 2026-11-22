@@ -62,7 +62,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
       runStatus={sheet.run?.status ?? null}
       editable={sheet.editable}
       // Salary figures are removed server-side for users without salary:read.
-      rows={showSalary ? sheet.rows : sheet.rows.map((r) => ({ ...r, fix: null, fixProrated: null, variable: "0", bonus: "0", deduction: "0", calculated: "0", fact: null, factReason: null, payable: "0", approved: null, paid: "0", outstanding: null }))}
+      rows={showSalary ? sheet.rows : sheet.rows.map((r) => ({ ...r, fix: null, fixProrated: null, variable: "0", bonus: "0", deduction: "0", calculated: "0", fact: null, factReason: null, payable: "0", kpiBonusAuto: "0", kpiBonusOverride: null, kpiBonusReason: null, approved: null, paid: "0", outstanding: null }))}
       departments={departments}
       accounts={can(user, "payroll:pay") ? openAccounts : []}
       perms={{
@@ -93,6 +93,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
         payrollByDepartment={payrollByDepartment}
         accounts={openAccounts}
         canManage={can(user, "project_finance:manage")}
+        canCategories={can(user, "ledger:manage")}
         open={sheet.periodStatus !== "CLOSED" && sheet.periodStatus !== "LOCKED"}
       />
     )}

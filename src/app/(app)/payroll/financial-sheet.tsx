@@ -1,9 +1,9 @@
 "use client"
 
 import Decimal from "decimal.js"
-import { Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus, SlidersHorizontal, Copy } from "lucide-react"
+import { Download, Eye, History, Archive, Plus, Wallet, Check, AlertTriangle, Search, Building2, Filter, Loader2, Undo2, UserPlus, SlidersHorizontal, Copy, X } from "lucide-react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type KeyboardEvent as ReactKeyboardEvent } from "react"
 import { cn } from "cn"
 
@@ -20,6 +20,7 @@ import { MonthPicker, StatusBadges } from "./month-header"
 import { ApprovalDialog, CarryForwardDialog, ConditionsDialog } from "./payroll-dialogs"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import { withMonth } from "@/lib/month-nav"
+import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs } from "@/lib/department-view"
 import {
   addEmployeeAction,
   archiveEmployeeAction,
@@ -151,7 +152,20 @@ export function FinancialSheet(props: Props) {
   const undoStack = useRef<Undo[]>([])
   const router = useRouter()
   const [refreshing, startRefresh] = useTransition()
-  const [deptFilter, setDeptFilter] = useState("")
+  // From December 2026: department tabs. The tab lives in the URL (?dept=) and switching it filters on
+  // the client (no server round trip); earlier months keep the plain department filter.
+  const deptView = departmentViewActive(monthKey)
+  const searchParams = useSearchParams()
+  const tabs = useMemo(() => orderDepartmentTabs(props.departments.filter((d) => !d.archived)), [props.departments])
+  const urlDept = searchParams.get(DEPARTMENT_PARAM)
+  const [deptFilterState, setDeptFilterState] = useState("")
+  const deptFilter = deptView ? (urlDept === ALL_DEPARTMENTS ? "" : (urlDept ?? tabs[0]?.id ?? "")) : deptFilterState
+  const setDeptFilter = (id: string) => {
+    if (!deptView) return setDeptFilterState(id)
+    const next = new URLSearchParams(window.location.search)
+    next.set(DEPARTMENT_PARAM, id || ALL_DEPARTMENTS)
+    window.history.replaceState(null, "", `${window.location.pathname}?${next.toString()}`)
+  }
   const [query, setQuery] = useState("")
   const [extra, setExtra] = useState(false)
   const [active, setActive] = useState<{ r: number; c: number }>({ r: 0, c: 0 })
@@ -210,12 +224,14 @@ export function FinancialSheet(props: Props) {
       { key: "kpiTarget", kind: "money", width: 120, field: "kpiTarget", can: canEdit(perms.kpi), money: true },
       { key: "kpiActual", kind: "money", width: 120, field: "kpiActual", can: canEdit(perms.kpi), money: true },
       { key: "commission", kind: "money", width: 100, field: "commission", can: canEdit(perms.compensation) },
-      { key: "variable", kind: "output", width: 110, can: false, money: true },
+      // KPI Bonus: automatic by default; editing it is "Изменить бонус вручную" (reason required).
+      { key: "variable", kind: "money", width: 130, field: "kpiBonus", can: canEdit(perms.compensation), money: true },
       { key: "bonus", kind: "money", width: 115, field: "bonus", can: canEdit(perms.adjustment), money: true },
       { key: "calculated", kind: "output", width: 130, can: false, money: true },
       { key: "fact", kind: "money", width: 150, field: "fact", can: canEdit(perms.salary), money: true },
       { key: "confirm", kind: "check", width: 84, can: canEdit(perms.prepare) },
-      { key: "wallet", kind: "wallet", width: 190, field: "wallet", can: canEdit(perms.wallet) },
+      // A wallet belongs to the employee, not to the month's payroll: editable in approved months too.
+      { key: "wallet", kind: "wallet", width: 190, field: "wallet", can: perms.wallet },
       { key: "startWork", kind: "date", width: 100, field: "hireDate", can: canEdit(perms.employee) },
     ]
     // After approval the payment columns matter; otherwise they are in "more columns".
@@ -269,6 +285,7 @@ export function FinancialSheet(props: Props) {
       case "bonus": return row.bonus
       case "deduction": return row.deduction
       case "fact": return row.fact ?? ""
+      case "variable": return row.kpiBonusOverride ?? ""
       default: return baseValue(row, col, t)
     }
   }
@@ -315,12 +332,16 @@ export function FinancialSheet(props: Props) {
     }
     // FACT PAYMENT below the calculated salary is a correction: ask for the reason once.
     let reason: string | null = null
+    if (col.key === "variable" && value !== "") {
+      reason = window.prompt(A.payroll.kpiBonusReasonPrompt, row.kpiBonusReason ?? "")?.trim() || null
+      if (!reason) return false
+    }
     if (col.key === "fact" && value !== "" && Number(value) < Number(row.calculated) && !row.factReason) {
       reason = window.prompt(A.payroll.factReasonPrompt)?.trim() || null
       if (!reason) return false
     }
     const before = expected ?? serverValue(row, col.key)
-    setPending((p) => ({ ...p, [key(row, col.key)]: col.kind === "money" || col.key === "startWork" ? (col.key === "fact" && value === "" ? row.calculated : value) : input }))
+    setPending((p) => ({ ...p, [key(row, col.key)]: col.kind === "money" || col.key === "startWork" ? (col.key === "fact" && value === "" ? row.calculated : col.key === "variable" && value === "" ? row.kpiBonusAuto : value) : input }))
     setInflight((n) => n + 1)
     const result = await updateCellAction(monthKey, row.employeeId, col.field, value, col.key === "wallet" ? null : before, reason).catch(() => ({ ok: false as const, message: locale === "ru" ? "Соединение прервано" : "Connection lost" }))
     setInflight((n) => n - 1)
@@ -425,6 +446,8 @@ export function FinancialSheet(props: Props) {
     then?.()
     const original = col.key === "department" ? (row.departmentId ?? "") : col.key === "status" ? row.status : raw(row, col.key)
     if (value === original) return
+    // Opening the wallet editor and leaving it empty keeps the wallet (clearing is an explicit action).
+    if (col.kind === "wallet" && !value.trim()) return
     // Saved cells arrive fresh with the action response (revalidatePath); no second full reload.
     await saveCell(row, col, value)
   }
@@ -693,6 +716,29 @@ export function FinancialSheet(props: Props) {
         </div>
       </div>
 
+      {deptView && tabs.length > 0 && (
+        <nav aria-label={locale === "ru" ? "Отделы" : "Departments"} className="flex flex-wrap gap-2">
+          {[...tabs.map((d) => ({ id: d.id, name: d.name })), { id: "", name: locale === "ru" ? "Все отделы" : "All departments" }].map((d) => {
+            const active = deptFilter === d.id
+            const count = d.id ? rows.filter((r) => r.departmentId === d.id).length : rows.length
+            return (
+              <button
+                key={d.id || "all"}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setDeptFilter(d.id)}
+                className={cn(
+                  "rounded-xl border px-4 py-2 font-display text-sm font-black tracking-wide uppercase italic transition-colors",
+                  active ? "border-primary bg-primary/20 text-primary shadow-[0_0_18px_rgba(236,72,153,0.25)]" : "border-border text-muted-foreground hover:border-primary/60 hover:text-foreground",
+                )}
+              >
+                {d.name} <span className="ml-1 font-sans text-[11px] font-normal not-italic opacity-70">{count}</span>
+              </button>
+            )
+          })}
+        </nav>
+      )}
+
       {rows.length === 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
           <span>{A.payroll.empty}</span>
@@ -846,7 +892,9 @@ export function FinancialSheet(props: Props) {
                               onConditions={editable && (perms.salary || perms.kpi) ? () => setConditionsFor(row) : undefined}
                               conditionsLabel={A.payroll.conditions}
                               inheritedLabel={A.payroll.inherited}
-                              factTexts={{ reset: A.payroll.factReset, manual: A.payroll.factManual, difference: A.payroll.factDifference, days: A.payroll.prorationDays, prorated: A.payroll.prorationTip }}
+                              factTexts={{ reset: A.payroll.factReset, manual: A.payroll.factManual, difference: A.payroll.factDifference, days: A.payroll.prorationDays, prorated: A.payroll.prorationTip, bonusManual: A.payroll.bonusManual, bonusManualShort: A.payroll.bonusManualShort, bonusAuto: A.payroll.bonusAuto, bonusReset: A.payroll.bonusReset, bonusEdit: A.payroll.bonusEdit }}
+                              onResetBonus={col.can && col.key === "variable" ? async () => { await saveCell(row, col, "") } : undefined}
+                              onClearWallet={col.key === "wallet" && col.can && row.wallet ? async () => { if (window.confirm(locale === "ru" ? `Удалить кошелёк сотрудника ${row.name}? Прошлые выплаты сохранятся.` : `Remove ${row.name}'s wallet? Past payments are kept.`)) await saveCell(row, col, "") } : undefined}
                               onResetFact={col.can && col.key === "fact" ? async () => { await saveCell(row, col, "") } : undefined}
                               onToggle={() => toggle(row, col)}
                               onTerms={() => col.can && setTermsFor(row)}
@@ -925,7 +973,7 @@ export function FinancialSheet(props: Props) {
       </div>
       {grand.excluded > 0 && <p className="text-xs text-amber-300/80">{fill(t.sheet.mixedCurrency, { n: grand.excluded })}</p>}
 
-      {editable && perms.employee && perms.salary && <AddEmployee monthKey={monthKey} departments={departments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
+      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter} monthKey={monthKey} departments={departments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
 
       {termsFor && (
         <TermsDialog
@@ -1055,8 +1103,10 @@ function CellView(props: {
   onConditions?: () => void
   conditionsLabel: string
   inheritedLabel: string
-  factTexts: { reset: string; manual: string; difference: string; days: string; prorated: string }
+  factTexts: { reset: string; manual: string; difference: string; days: string; prorated: string; bonusManual: string; bonusManualShort: string; bonusAuto: string; bonusReset: string; bonusEdit: string }
+  onResetBonus?: () => void
   onResetFact?: () => void
+  onClearWallet?: () => void
 }) {
   const { row, col, raw, locale, t } = props
   const money = (v: string | null, opts = {}) => formatAmount(v, row.currency, locale, opts)
@@ -1139,9 +1189,23 @@ function CellView(props: {
           {money(raw || null)}
         </span>
       )
-    case "variable":
+    case "variable": {
+      const manual = row.kpiBonusOverride !== null
+      return (
+        <span
+          className="flex items-center justify-end gap-1.5"
+          title={manual ? `${props.factTexts.bonusManual}${row.kpiBonusReason ? `: ${row.kpiBonusReason}` : ""}${row.kpiBonusBy ? ` (${row.kpiBonusBy})` : ""}\n${props.factTexts.bonusAuto}: ${money(row.kpiBonusAuto)}` : props.factTexts.bonusEdit}
+        >
+          {manual && props.onResetBonus && (
+            <button type="button" onClick={(e) => { e.stopPropagation(); props.onResetBonus?.() }} className="font-sans text-[11px] text-muted-foreground hover:text-primary" title={props.factTexts.bonusReset} aria-label={props.factTexts.bonusReset}>↺</button>
+          )}
+          {manual && <span className="rounded bg-amber-400/15 px-1 font-sans text-[9px] uppercase text-amber-300">{props.factTexts.bonusManualShort}</span>}
+          <span className={cn(manual && "text-amber-200 underline decoration-dotted")}>{money(raw || null, { blankZero: !manual })}</span>
+        </span>
+      )
+    }
     case "kpiActual":
-      return <>{money(raw || null, { blankZero: col.key === "variable" })}</>
+      return <>{money(raw || null)}</>
     case "calculated":
       return (
         <span className="flex items-center justify-end gap-1.5 font-semibold">
@@ -1196,6 +1260,11 @@ function CellView(props: {
               <Eye className="size-3.5" />
             </button>
           )}
+          {props.onClearWallet && (
+            <button type="button" onClick={(e) => { e.stopPropagation(); props.onClearWallet?.() }} className="text-muted-foreground hover:text-red-300" title={locale === "ru" ? "Удалить кошелёк" : "Remove wallet"} aria-label={locale === "ru" ? "Удалить кошелёк" : "Remove wallet"}>
+              <X className="size-3.5" />
+            </button>
+          )}
         </span>
       ) : (
         <span className="text-muted-foreground">—</span>
@@ -1235,10 +1304,14 @@ function CellEditor(props: {
     finished.current = true
     fn()
   }
+  // Focus and select the starting value ONCE when the editor opens. (Re-running this on every change of
+  // the value's length selected all text after the 2nd character, so the 3rd keystroke replaced it:
+  // amounts and wallet addresses could not be typed beyond two characters.)
   useEffect(() => {
     ref.current?.focus()
     if (ref.current && "setSelectionRange" in ref.current && col.kind !== "select" && value.length > 1) ref.current.select()
-  }, [col.kind, value.length])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally on mount only
+  }, [])
   const onKeyDown = (event: ReactKeyboardEvent) => {
     if (event.key === "Enter") {
       event.preventDefault()
@@ -1274,7 +1347,7 @@ function CellEditor(props: {
       value={value}
       type={col.kind === "date" ? "date" : "text"}
       inputMode={col.kind === "money" ? "decimal" : undefined}
-      placeholder={col.kind === "wallet" ? "TRC20 / ERC20 address" : undefined}
+      placeholder={col.kind === "wallet" ? "TRC20 / ERC20 / Binance Pay ID / IBAN…" : undefined}
       onChange={(e) => props.onChange(e.target.value)}
       onBlur={() => finish(() => props.onCommit())}
       onKeyDown={onKeyDown}
@@ -1510,8 +1583,9 @@ function HistoryDialog({ row, locale, t, onClose }: { row: SheetRow; locale: Loc
 }
 
 /** The empty row under the table: type a name, department and FIX, press Enter. */
-function AddEmployee({ monthKey, departments, t, hint, toast, onDone }: { monthKey: string; departments: { id: string; name: string }[]; t: Dictionary; hint: string; toast: (text: string, tone?: "ok" | "error") => void; onDone: () => void }) {
-  const [form, setForm] = useState({ name: "", departmentId: departments[0]?.id ?? "", fix: "", currency: "USD", hireDate: "" })
+function AddEmployee({ monthKey, departments, t, hint, toast, onDone, defaultDepartmentId }: { monthKey: string; departments: { id: string; name: string }[]; t: Dictionary; hint: string; toast: (text: string, tone?: "ok" | "error") => void; onDone: () => void; defaultDepartmentId?: string }) {
+  // The selected department tab is the default department of a new employee.
+  const [form, setForm] = useState({ name: "", departmentId: defaultDepartmentId || departments[0]?.id || "", fix: "", currency: "USD", hireDate: "" })
   const [saving, setSaving] = useState(false)
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }))
   return (

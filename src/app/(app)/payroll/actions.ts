@@ -48,7 +48,7 @@ import { parseMonth } from "@/lib/period"
 
 export type CellResult = { ok: true; unconfirmed?: boolean } | { ok: false; message: string; conflict?: { current: string } }
 
-const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet", "fact", "commission"]
+const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet", "fact", "commission", "kpiBonus"]
 
 function month(key: string) {
   const m = parseMonth(key)
@@ -122,6 +122,10 @@ const RU: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/Enter the reason for cancelling the approval/, "Укажите причину отмены утверждения."],
   [/^(.+) is not approved\.$/, (m) => `${m[1]} не утверждён.`],
   [/Salary payments are already recorded for (.+)\. Approval/, (m) => `За ${m[1]} уже записаны выплаты зарплаты. Отменить утверждение можно только до первой выплаты: сначала сторнируйте выплаты.`],
+  [/Enter the reason for the manual KPI bonus/, "Укажите причину ручного изменения KPI-бонуса."],
+  [/^KPI Bonus: "(.+)" is not a number/, (m) => `KPI Bonus: «${m[1]}» — не число.`],
+  [/Enter the wallet address or payout destination/, "Введите адрес кошелька или реквизиты выплаты (от 3 до 200 символов)."],
+  [/WALLET_ENCRYPTION_KEY/, "На сервере не настроен ключ шифрования кошельков — обратитесь к администратору."],
   [/This cell was changed by someone else/, "Ячейку уже изменил кто-то другой. Данные обновлены — проверьте новое значение и повторите."],
   [/You do not have permission to edit this column/, "У вашей роли нет права менять эту колонку."],
   [/^(.+): "(.+)" is not a number/, (m) => `${m[1]}: «${m[2]}» — не число.`],

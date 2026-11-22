@@ -50,20 +50,20 @@ const T = {
 const fill = (s: string, v: Record<string, string | number>) => s.replace(/\{(\w+)\}/g, (_, k) => String(v[k] ?? ""))
 
 /** "Carry recurring costs" button and dialog for the project costs block (plans only, never actuals). */
-export function CarryCostsButton(props: { locale: Locale; monthKey: string; ledger: Ledger; onDone: () => void; onError: (m: string) => void }) {
+export function CarryCostsButton(props: { locale: Locale; monthKey: string; ledger: Ledger; departmentId?: string; onDone: () => void; onError: (m: string) => void }) {
   const t = T[props.locale]
   const [open, setOpen] = useState(false)
   return (
     <>
       <Button size="sm" variant="outline" onClick={() => setOpen(true)}><Copy /> {t.carry}</Button>
-      {open && <CarryCostsDialog t={t} locale={props.locale} monthKey={props.monthKey} ledger={props.ledger} onClose={() => setOpen(false)} onDone={(message) => { setOpen(false); window.alert(message); props.onDone() }} onError={props.onError} />}
+      {open && <CarryCostsDialog t={t} locale={props.locale} monthKey={props.monthKey} ledger={props.ledger} departmentId={props.departmentId} onClose={() => setOpen(false)} onDone={(message) => { setOpen(false); window.alert(message); props.onDone() }} onError={props.onError} />}
     </>
   )
 }
 
 type Preview = Extract<Awaited<ReturnType<typeof recurringPreviewAction>>, { ok: true }>["preview"]
 
-function CarryCostsDialog(props: { t: (typeof T)["ru"]; locale: Locale; monthKey: string; ledger: Ledger; onClose: () => void; onDone: (message: string) => void; onError: (m: string) => void }) {
+function CarryCostsDialog(props: { t: (typeof T)["ru"]; locale: Locale; monthKey: string; ledger: Ledger; departmentId?: string; onClose: () => void; onDone: (message: string) => void; onError: (m: string) => void }) {
   const { t } = props
   const [preview, setPreview] = useState<Preview | null>(null)
   const [drafts, setDrafts] = useState<Record<string, { selected: boolean; item: string; amount: string; teamId: string; recurring: boolean }>>({})
@@ -74,13 +74,15 @@ function CarryCostsDialog(props: { t: (typeof T)["ru"]; locale: Locale; monthKey
     recurringPreviewAction(props.monthKey).then((r) => {
       if (!alive) return
       if (!r.ok) return setError(r.message)
-      setPreview(r.preview)
-      setDrafts(Object.fromEntries(r.preview.rows.map((x) => [x.id, { selected: !x.present, item: x.item, amount: x.amount, teamId: x.teamId ?? "", recurring: true }])))
+      // From a department's view only that department's recurring costs are offered.
+      const preview = props.departmentId ? { ...r.preview, rows: r.preview.rows.filter((x) => x.departmentId === props.departmentId) } : r.preview
+      setPreview(preview)
+      setDrafts(Object.fromEntries(preview.rows.map((x) => [x.id, { selected: !x.present, item: x.item, amount: x.amount, teamId: x.teamId ?? "", recurring: true }])))
     })
     return () => {
       alive = false
     }
-  }, [props.monthKey])
+  }, [props.monthKey, props.departmentId])
   const selected = Object.entries(drafts).filter(([, d]) => d.selected)
   const set = (id: string, patch: Partial<(typeof drafts)[string]>) => setDrafts((all) => ({ ...all, [id]: { ...all[id], ...patch } }))
 

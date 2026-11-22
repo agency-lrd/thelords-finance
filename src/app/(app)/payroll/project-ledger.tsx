@@ -3,7 +3,7 @@
 import Decimal from "decimal.js"
 import { Check, Plus, Trash2 } from "lucide-react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { cn } from "cn"
 
@@ -15,6 +15,9 @@ import { formatAmount, normalizeNumber, type Locale } from "@/lib/i18n/format"
 
 import { addLedgerAction, confirmLedgerAction, deleteLedgerAction, settleLedgerAction, updateLedgerAction, type LedgerFormInput } from "./actions"
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
+import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs } from "@/lib/department-view"
+
+import { DepartmentFinance } from "./department-finance"
 import { CarryCostsButton } from "./recurring-costs"
 
 type Ledger = Awaited<ReturnType<typeof getProjectLedger>>
@@ -30,6 +33,8 @@ type Props = {
   accounts: { id: string; name: string; currency: string }[]
   canManage: boolean
   open: boolean
+  /** May create income/cost categories (ledger:manage). */
+  canCategories?: boolean
 }
 
 const CURRENCIES = ["USD", "USDT", "EUR", "GBP"] as const
@@ -43,6 +48,10 @@ export function ProjectLedger(props: Props) {
   const [editing, setEditing] = useState<Row | null>(null)
   const refresh = () => startRefresh(() => router.refresh())
   const editable = props.canManage && props.open
+  // From December 2026 the sheet has department tabs (?dept=); a selected department gets its own blocks.
+  const params = useSearchParams()
+  const deptView = departmentViewActive(props.monthKey)
+  const selected = deptView ? (params.get(DEPARTMENT_PARAM) ?? orderDepartmentTabs(ledger.departments)[0]?.id ?? ALL_DEPARTMENTS) : ALL_DEPARTMENTS
 
   const colorOf = useMemo(() => {
     const index = new Map(ledger.departments.map((d, i) => [d.id, { i, color: d.color }]))
@@ -65,6 +74,23 @@ export function ProjectLedger(props: Props) {
     { income: new Decimal(0), costs: new Decimal(0), payroll: new Decimal(0), value: new Decimal(0) },
   )
   const maxAbs = contribution.reduce((m, r) => Decimal.max(m, r.value.abs()), new Decimal(1))
+
+  if (selected !== ALL_DEPARTMENTS && ledger.departments.some((d) => d.id === selected)) {
+    return (
+      <DepartmentFinance
+        locale={locale}
+        monthKey={props.monthKey}
+        baseCurrency={baseCurrency}
+        departmentId={selected}
+        ledger={ledger}
+        payroll={props.payrollByDepartment[selected] ?? "0"}
+        accounts={props.accounts}
+        editable={editable}
+        canCategories={!!props.canCategories}
+        onRefresh={refresh}
+      />
+    )
+  }
 
   return (
     <div className="mt-12 flex flex-col gap-12">
@@ -360,7 +386,7 @@ function DepartmentCard(props: {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RowDialog(props: {
+export function RowDialog(props: {
   row: Row
   ledger: Ledger
   accounts: { id: string; name: string; currency: string }[]

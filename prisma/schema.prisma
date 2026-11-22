@@ -632,6 +632,7 @@ model AppUser {
   vaultSecretsUpdated      VaultSecret[]            @relation("VaultSecretUpdatedBy")
   plansFixed               FinancialPlan[]          @relation("PlanFixedBy")
   plansCreated             FinancialPlan[]          @relation("PlanCreatedBy")
+  kpiBonusesSet            PayrollMonthEmployee[]   @relation("KpiBonusSetBy")
 
   @@map("app_users")
 }
@@ -2147,6 +2148,11 @@ model PayrollMonthEmployee {
   snapshotAt          DateTime?         @map("snapshot_at") @db.Timestamptz(6)
   factPayment         Decimal?          @map("fact_payment") @db.Decimal(20, 2)
   factReason          String?           @map("fact_reason")
+  /// Manual KPI bonus replacing the automatic one (null = automatic), with who/why/when.
+  kpiBonusOverride    Decimal?          @map("kpi_bonus_override") @db.Decimal(20, 2)
+  kpiBonusReason      String?           @map("kpi_bonus_reason")
+  kpiBonusSetById     String?           @map("kpi_bonus_set_by_id") @db.Uuid
+  kpiBonusSetAt       DateTime?         @map("kpi_bonus_set_at") @db.Timestamptz(6)
   createdById         String?           @map("created_by_id") @db.Uuid
   createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -2155,6 +2161,7 @@ model PayrollMonthEmployee {
   carriedFromPeriod FinancialPeriod? @relation("MonthRosterSource", fields: [carriedFromPeriodId], references: [id], onDelete: Restrict)
   employee          Employee         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   createdBy         AppUser?         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  kpiBonusSetBy     AppUser?         @relation("KpiBonusSetBy", fields: [kpiBonusSetById], references: [id], onDelete: Restrict)
 
   @@unique([periodId, employeeId])
   @@index([employeeId])

@@ -71,6 +71,11 @@ export type PayrollInput = {
   manualAdjustment?: Num | null
   /** Shown on the payslip line of the manual adjustment. */
   manualReason?: string | null
+  /**
+   * Manual KPI bonus: REPLACES the bonus the compensation rules would give (never added to it). The rules
+   * are still evaluated for the KPI metric; their amounts are not paid.
+   */
+  variableOverride?: { amount: Num; reason?: string | null } | null
   /** Minor-unit precision of the payslip currency (2 for USD/EUR/GBP). */
   decimals?: number
 }
@@ -216,7 +221,7 @@ export function calculatePayroll(input: PayrollInput): PayrollResult {
     metric = result.metric
     targetMet = result.targetMet
     const amount = round(result.amount)
-    if (amount.isZero()) continue
+    if (amount.isZero() || input.variableOverride) continue
     const lineType = RULE_LINE[rule.type]
     lines.push({
       source: "rule",
@@ -227,6 +232,13 @@ export function calculatePayroll(input: PayrollInput): PayrollResult {
       rate: result.rate ?? undefined,
       ruleId: rule.id,
     })
+  }
+
+  if (input.variableOverride) {
+    const amount = round(Decimal.max(ZERO, new Decimal(input.variableOverride.amount)))
+    if (!amount.isZero()) {
+      lines.push({ source: "rule", lineType: "KPI_BONUS", description: `KPI bonus (manual)${input.variableOverride.reason ? `: ${input.variableOverride.reason}` : ""}`.slice(0, 500), amount })
+    }
   }
 
   // Approved adjustments

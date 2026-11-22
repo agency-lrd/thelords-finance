@@ -105,9 +105,12 @@ export type MonthSnapshot = {
   commissionPct?: string | null
   proration?: Proration | null
   fixProrated?: string | null
+  kpiBonusAuto?: string
+  kpiBonusOverride?: string | null
+  kpiBonusReason?: string | null
 }
 
-const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated", "fact", "factReason", "payable", "commissionPct", "proration", "fixProrated"]
+const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated", "fact", "factReason", "payable", "commissionPct", "proration", "fixProrated", "kpiBonusAuto", "kpiBonusOverride", "kpiBonusReason"]
 
 /** The snapshot fields of a row (keys a snapshot lacks are left out, so live values are not blanked). */
 export function pickSnapshot(source: MonthSnapshot): MonthSnapshot {
@@ -171,7 +174,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       kpiActuals: { where: { kpiDefinitionId: kpi.id, period: { year: m.year, month: m.month } } },
       payrollAdjustments: { where: { period: { year: m.year, month: m.month }, status: { in: ["PENDING", "APPROVED", "APPLIED"] } } },
       payoutWallets: { where: { archivedAt: null }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }], take: 1 },
-      monthMemberships: { where: { period: { year: m.year, month: m.month } }, take: 1, select: { source: true, snapshot: true, snapshotAt: true, factPayment: true, factReason: true } },
+      monthMemberships: { where: { period: { year: m.year, month: m.month } }, take: 1, select: { source: true, snapshot: true, snapshotAt: true, factPayment: true, factReason: true, kpiBonusOverride: true, kpiBonusReason: true, kpiBonusSetAt: true, kpiBonusSetBy: { select: { email: true } } } },
       payrollItems: run
         ? { where: { payrollRunId: run.id }, include: { payments: { where: { status: { in: ["SENT", "CONFIRMED"] } } }, lines: true } }
         : { where: { id: "00000000-0000-0000-0000-000000000000" }, include: { payments: true, lines: true } },
@@ -191,7 +194,10 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
     const days = payableDays(m, e.hireDate, e.terminationDate, proration)
     const member = e.monthMemberships[0] ?? null
     const fact = member?.factPayment != null ? new Decimal(member.factPayment) : null
-    const calc = calculate(salary, rules, target, actual, approvedAdjustments, days)
+    const override = member?.kpiBonusOverride != null ? { amount: member.kpiBonusOverride.toString(), reason: member.kpiBonusReason } : null
+    const calc = calculate(salary, rules, target, actual, approvedAdjustments, days, null, override)
+    // The automatic KPI bonus, shown next to a manual one (never added to it).
+    const autoBonus = override ? calculate(salary, rules, target, actual, approvedAdjustments, days).variable : calc.variable
     const payable = fact ?? calc.net
 
     const item = e.payrollItems[0] ?? null
@@ -243,6 +249,12 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       monthSource: e.monthMemberships[0]?.source ?? null,
       kpiActual: str(actual),
       variable: calc.variable.toString(),
+      /** KPI bonus by the formula; equals `variable` unless a manual bonus replaces it. */
+      kpiBonusAuto: autoBonus.toString(),
+      kpiBonusOverride: override ? new Decimal(override.amount).toString() : null,
+      kpiBonusReason: member?.kpiBonusReason ?? null,
+      kpiBonusBy: override ? (member?.kpiBonusSetBy?.email ?? null) : null,
+      kpiBonusAt: override ? (member?.kpiBonusSetAt?.toISOString() ?? null) : null,
       bonus: bonus.toString(),
       deduction: deduction.toString(),
       pendingAdjustments: pending.length,
@@ -339,10 +351,12 @@ function calculate(
   adjustments: { id: string; type: "BONUS" | "CORRECTION" | "DEDUCTION" | "REIMBURSEMENT" | "ADVANCE" | "ADVANCE_RECOVERY"; amount: Prisma.Decimal; reason: string }[],
   days: Proration | null = null,
   manualAdjustment: Decimal | null = null,
+  variableOverride: { amount: string; reason: string | null } | null = null,
 ): PayrollResult {
   return calculatePayroll({
     salary: salary ? { payBasis: salary.payBasis, amount: salary.baseAmount.toString(), prorate: days } : null,
     manualAdjustment: manualAdjustment?.toString() ?? null,
+    variableOverride,
     kpi: { target: str(target), actual: str(actual) },
     rules: rules.map(ruleInput),
     adjustments: adjustments.map((a) => ({ id: a.id, type: a.type, amount: a.amount.toString(), reason: a.reason })),
@@ -370,6 +384,7 @@ export type SheetField =
   | "wallet"
   | "fact"
   | "commission"
+  | "kpiBonus"
 
 const FIELD_PERMISSION = {
   name: "employee:manage",
@@ -388,10 +403,11 @@ const FIELD_PERMISSION = {
   wallet: "wallet:manage",
   fact: "salary:manage",
   commission: "compensation:manage",
+  kpiBonus: "compensation:manage",
 } as const satisfies Record<SheetField, string>
 
 /** Fields whose change alters pay: a confirmed row is un-confirmed so it is re-checked. */
-const MONEY_FIELDS: SheetField[] = ["fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "fact", "commission"]
+const MONEY_FIELDS: SheetField[] = ["fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "fact", "commission", "kpiBonus"]
 
 const AMOUNT = /^-?\d{1,16}(\.\d{1,8})?$/
 
@@ -457,10 +473,11 @@ export function cellValue(row: SheetRow, field: SheetField): string {
     case "wallet": return row.wallet?.masked ?? ""
     case "fact": return row.fact ?? ""
     case "commission": return row.commissionPct ?? ""
+    case "kpiBonus": return row.kpiBonusOverride ?? ""
   }
 }
 
-const NUMERIC: SheetField[] = ["fix", "kpiTarget", "kpiActual", "bonus", "deduction", "fact", "commission"]
+const NUMERIC: SheetField[] = ["fix", "kpiTarget", "kpiActual", "bonus", "deduction", "fact", "commission", "kpiBonus"]
 
 function sameValue(field: SheetField, a: string, b: string) {
   if (NUMERIC.includes(field)) {
@@ -485,6 +502,13 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
     const employee = await tx.employee.findFirst({ where: { id: employeeId, organizationId: user.organizationId } })
     if (!employee) throw new UserInputError("Employee not found.")
     await tx.$executeRaw`SELECT 1 FROM employees WHERE id = ${employeeId}::uuid FOR UPDATE`
+    // The payout wallet belongs to the employee, not to a month's payroll: it can change in any month
+    // (also approved ones) and never un-confirms or touches a payslip.
+    if (field === "wallet") {
+      await setWallet(tx, user, employeeId, raw)
+      await audit(tx, user, "sheet.update.wallet", "employee", employeeId, { month: `${m.year}-${String(m.month).padStart(2, "0")}`, value: raw.trim() ? maskIdentifier(raw.trim()) : null, unconfirmed: false })
+      return { unconfirmed: false }
+    }
     const { period, run } = await editableMonth(tx, user, m)
     if (!(await tx.payrollMonthEmployee.findUnique({ where: { periodId_employeeId: { periodId: period.id, employeeId } } }))) {
       throw new UserInputError("The employee is not on this month's sheet. Carry them over from the previous month or add them first.")
@@ -544,9 +568,6 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
       case "deduction":
         await setSheetAdjustment(tx, user, employeeId, period.id, field === "bonus" ? "BONUS" : "DEDUCTION", parseCellAmount(value, field === "bonus" ? "Bonus" : "Deduction"), m)
         break
-      case "wallet":
-        await setWallet(tx, user, employeeId, value)
-        break
       case "fact": {
         // FACT PAYMENT: the final amount intended for the month. Not a payment: money sent is recorded
         // separately. Paying less than the calculated salary is a correction and needs a reason.
@@ -561,6 +582,19 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
         await tx.payrollMonthEmployee.update({
           where: { periodId_employeeId: { periodId: period.id, employeeId } },
           data: { factPayment: amount?.toString() ?? null, factReason: amount === null ? null : (note ?? undefined) },
+        })
+        break
+      }
+      case "kpiBonus": {
+        // "Изменить бонус вручную": replaces the automatic KPI bonus; empty = back to the formula.
+        const amount = parseCellAmount(value, "KPI Bonus")
+        const note = (reason ?? "").trim().slice(0, 500)
+        if (amount !== null && !note) throw new UserInputError("Enter the reason for the manual KPI bonus.")
+        await tx.payrollMonthEmployee.update({
+          where: { periodId_employeeId: { periodId: period.id, employeeId } },
+          data: amount === null
+            ? { kpiBonusOverride: null, kpiBonusReason: null, kpiBonusSetById: null, kpiBonusSetAt: null }
+            : { kpiBonusOverride: amount.toString(), kpiBonusReason: note, kpiBonusSetById: user.id, kpiBonusSetAt: new Date() },
         })
         break
       }
@@ -588,9 +622,8 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
     }
     await audit(tx, user, `sheet.update.${field}`, "employee", employeeId, {
       month: `${m.year}-${String(m.month).padStart(2, "0")}`,
-      // Wallet details are never written to the audit log.
-      value: field === "wallet" ? (value ? maskIdentifier(value) : null) : value,
-      ...(field === "fact" && reason ? { reason } : {}),
+      value,
+      ...((field === "fact" || field === "kpiBonus") && reason ? { reason } : {}),
       unconfirmed,
     })
     return { unconfirmed }
@@ -777,25 +810,34 @@ async function setSheetAdjustment(tx: Tx, user: SessionUser, employeeId: string,
   }
 }
 
-async function setWallet(tx: Tx, user: SessionUser, employeeId: string, address: string) {
+/**
+ * Sets (or with "" removes) the employee's payout destination. Accepts a USDT address (TRC20/ERC20
+ * detected) or any free-text destination such as "Binance Pay 123456789" or an IBAN: no blockchain
+ * format is forced. Stored encrypted with a masked form for display; the previous destination is
+ * archived, never deleted, so past payments keep it.
+ */
+async function setWallet(tx: Tx, user: SessionUser, employeeId: string, raw: string) {
+  const address = raw.trim().replace(/\s+/g, " ")
+  if (address && (address.length < 3 || address.length > 200 || /[\u0000-\u001f\u007f]/.test(address))) {
+    throw new UserInputError("Enter the wallet address or payout destination (3 to 200 characters).")
+  }
   const current = await tx.payoutWallet.findFirst({ where: { employeeId, archivedAt: null, isDefault: true } })
   if (current) await tx.payoutWallet.update({ where: { id: current.id }, data: { archivedAt: new Date(), isDefault: false } })
   if (!address) return
-  if (address.length < 8 || address.length > 200 || /\s/.test(address)) throw new UserInputError("That does not look like a wallet address.")
   const network = detectNetwork(address)
+  const iban = /^[A-Z]{2}\d{2}[A-Z0-9 ]{10,40}$/i.test(address)
   await tx.payoutWallet.create({
     data: {
       employeeId,
-      type: "CRYPTO_WALLET",
-      label: network ? `USDT ${network}` : "Wallet",
-      currency: "USDT",
+      type: network ? "CRYPTO_WALLET" : iban ? "BANK_ACCOUNT" : "PAYMENT_SERVICE",
+      label: network ? `USDT ${network}` : iban ? "Bank account" : "Payout destination",
+      currency: network ? "USDT" : user.baseCurrency,
       network,
       maskedIdentifier: maskIdentifier(address),
       detailsEncrypted: encryptSecret(address),
       isDefault: true,
     },
   })
-  void user
 }
 
 export async function revealWallet(user: SessionUser, walletId: string, db: Db = prisma) {
@@ -1004,9 +1046,10 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
     const rules = employee.compensationScopes.map((s) => s.rule)
     const kpiActual = employee.kpiActuals[0] ?? null
     const days = payableDays(m, employee.hireDate, employee.terminationDate, await prorationSettings(tx, user.organizationId))
-    const calculated = calculate(salary, rules, employee.kpiTargets[0]?.targetValue ?? null, kpiActual?.actualValue ?? null, employee.payrollAdjustments, days)
     // FACT PAYMENT differing from the calculation becomes an explicit, reasoned payslip line.
     const member = await tx.payrollMonthEmployee.findUniqueOrThrow({ where: { periodId_employeeId: { periodId: period.id, employeeId } } })
+    const override = member.kpiBonusOverride != null ? { amount: member.kpiBonusOverride.toString(), reason: member.kpiBonusReason } : null
+    const calculated = calculate(salary, rules, employee.kpiTargets[0]?.targetValue ?? null, kpiActual?.actualValue ?? null, employee.payrollAdjustments, days, null, override)
     const difference = member.factPayment != null ? new Decimal(member.factPayment).sub(calculated.net) : null
     const calc = difference && !difference.isZero()
       ? calculatePayroll({
@@ -1016,6 +1059,7 @@ export async function setRowConfirmed(user: SessionUser, m: Month, employeeId: s
           adjustments: employee.payrollAdjustments.map((a) => ({ id: a.id, type: a.type, amount: a.amount.toString(), reason: a.reason })),
           manualAdjustment: difference.toString(),
           manualReason: `FACT PAYMENT${member.factReason ? `: ${member.factReason}` : ""}`.slice(0, 500),
+          variableOverride: override,
         })
       : calculated
     const fxRate = await fxRateFor(tx, user, salary.currency, m)
