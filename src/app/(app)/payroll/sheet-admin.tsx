@@ -23,7 +23,7 @@ import {
 } from "./actions"
 import { PALETTE, paletteFor } from "./palette"
 
-export type SheetDepartment = { id: string; name: string; color: string | null; archived: boolean; employees: number; hasHistory: boolean }
+export type SheetDepartment = { id: string; name: string; color: string | null; archived: boolean; employees: number; hasHistory: boolean; mainOrder?: number | null }
 
 const fillText = (text: string, values: Record<string, string | number>) => text.replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? ""))
 

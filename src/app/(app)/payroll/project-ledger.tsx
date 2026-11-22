@@ -15,7 +15,7 @@ import { formatAmount, normalizeNumber, type Locale } from "@/lib/i18n/format"
 
 import { addLedgerAction, confirmLedgerAction, deleteLedgerAction, settleLedgerAction, updateLedgerAction, type LedgerFormInput } from "./actions"
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
-import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs } from "@/lib/department-view"
+import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, mainDepartmentTabs } from "@/lib/department-view"
 
 import { DepartmentFinance } from "./department-finance"
 import { CarryCostsButton } from "./recurring-costs"
@@ -51,7 +51,12 @@ export function ProjectLedger(props: Props) {
   // From December 2026 the sheet has department tabs (?dept=); a selected department gets its own blocks.
   const params = useSearchParams()
   const deptView = departmentViewActive(props.monthKey)
-  const selected = deptView ? (params.get(DEPARTMENT_PARAM) ?? orderDepartmentTabs(ledger.departments)[0]?.id ?? ALL_DEPARTMENTS) : ALL_DEPARTMENTS
+  const mains = mainDepartmentTabs(ledger.departments)
+  const mainIds = new Set(mains.map((d) => d.id))
+  const requested = params.get(DEPARTMENT_PARAM)
+  const selected = deptView ? (requested && mainIds.has(requested) ? requested : (mains[0]?.id ?? ALL_DEPARTMENTS)) : ALL_DEPARTMENTS
+  // Income and costs of this month still in an old department: listed to move explicitly, never hidden.
+  const legacy = deptView && mains.length ? [...ledger.income, ...ledger.costs].filter((r) => !r.departmentId || !mainIds.has(r.departmentId)) : []
 
   const colorOf = useMemo(() => {
     const index = new Map(ledger.departments.map((d, i) => [d.id, { i, color: d.color }]))
@@ -77,6 +82,9 @@ export function ProjectLedger(props: Props) {
 
   if (selected !== ALL_DEPARTMENTS && ledger.departments.some((d) => d.id === selected)) {
     return (
+      <>
+      {legacy.length > 0 && <LegacyRecords locale={locale} rows={legacy} mains={mains} editable={editable} departments={ledger.departments} onError={setError} onDone={() => { setError(null); refresh() }} />}
+      {error && <p role="alert" className="mt-6 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-red-200">{error}</p>}
       <DepartmentFinance
         // Per department: its add forms start empty (typed values never leak into another department).
         key={selected}
@@ -91,6 +99,7 @@ export function ProjectLedger(props: Props) {
         canCategories={!!props.canCategories}
         onRefresh={refresh}
       />
+      </>
     )
   }
 
@@ -577,5 +586,38 @@ function Field({ label, span, children }: { label: string; span?: boolean; child
       {label}
       {children}
     </label>
+  )
+}
+
+/** This month's income and costs still in an old department (from November 2026), moved explicitly. */
+function LegacyRecords(props: { locale: Locale; rows: Row[]; mains: { id: string; name: string }[]; departments: Ledger["departments"]; editable: boolean; onError: (m: string) => void; onDone: () => void }) {
+  const ru = props.locale === "ru"
+  const [choice, setChoice] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState<string | null>(null)
+  const nameOf = (id: string | null) => props.departments.find((d) => d.id === id)?.name ?? (ru ? "Без отдела" : "No department")
+  return (
+    <section className="mt-10 rounded-2xl border border-amber-400/40 bg-amber-400/5 px-4 py-3">
+      <p className="text-sm font-semibold text-amber-200">{ru ? `Доходы и расходы в старых отделах: ${props.rows.length}` : `Income and costs in old departments: ${props.rows.length}`}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{ru ? "Выберите основной отдел для каждой строки. Подтверждённую строку сначала снимите с подтверждения (✓) — так в отчётах ничего не задвоится. Автоматически ничего не переносится." : "Choose a main department for each row. Un-confirm a confirmed row first (✓) so nothing is counted twice. Nothing is moved automatically."}</p>
+      <ul className="mt-2 flex flex-col divide-y divide-border/40 text-sm">
+        {props.rows.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center gap-2 py-1.5">
+            <span className="min-w-48 flex-1">{r.item} <span className="text-[11px] text-muted-foreground">· {r.kind === "income" ? (ru ? "доход" : "income") : (ru ? "расход" : "cost")} · {nameOf(r.departmentId)}</span></span>
+            <span className="font-mono">{formatAmount(r.amount, r.currency, props.locale)}</span>
+            {props.editable && (r.confirmed ? (
+              <Button size="sm" variant="ghost" disabled={busy === r.id} onClick={async () => { setBusy(r.id); const x = await confirmLedgerAction(r.kind, r.id, false); setBusy(null); if (!x.ok) return props.onError(x.message ?? "Error"); props.onDone() }}>{ru ? "Снять подтверждение" : "Un-confirm"}</Button>
+            ) : (
+              <>
+                <Select value={choice[r.id] ?? ""} onChange={(e) => setChoice((c) => ({ ...c, [r.id]: e.target.value }))} className="h-7 w-44 text-xs">
+                  <option value="">{ru ? "Выберите отдел…" : "Choose department…"}</option>
+                  {props.mains.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </Select>
+                <Button size="sm" variant="outline" disabled={!choice[r.id] || busy === r.id} onClick={async () => { setBusy(r.id); const x = await updateLedgerAction(r.kind, r.id, { departmentId: choice[r.id] }); setBusy(null); if (!x.ok) return props.onError(x.message ?? "Error"); props.onDone() }}>{ru ? "Перенести" : "Move"}</Button>
+              </>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

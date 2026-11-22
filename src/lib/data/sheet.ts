@@ -7,6 +7,7 @@ import { UserInputError } from "@/lib/forms"
 import { Decimal, toBase } from "@/lib/money"
 import { calculatePayroll, describeRule, type PayrollResult, type RuleInput } from "@/lib/payroll/engine"
 import { payableDays, type Proration, type ProrationSettings } from "@/lib/payroll/proration"
+import { departmentViewActive } from "@/lib/department-view"
 import { monthEnd, monthLabel, monthStart, type Month } from "@/lib/period"
 
 import { assertPeriodOpen, audit, ensurePeriod, fxRateFor, type Tx } from "./common"
@@ -569,6 +570,7 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
         break
       }
       case "department":
+        await assertMainDepartment(tx, user, value, m)
         await setDepartmentFrom(tx, user, employeeId, value, monthStart(m))
         break
       case "fix":
@@ -722,6 +724,19 @@ async function setSalaryFrom(
       ...approval,
     },
   })
+}
+
+/**
+ * From November 2026 the sheet uses four main departments: a department chosen there must be one of them
+ * (other functions are positions). Earlier months and organizations without main departments are unchanged.
+ */
+async function assertMainDepartment(tx: Tx | Db, user: SessionUser, departmentId: string, m: Month) {
+  if (!departmentViewActive(`${m.year}-${String(m.month).padStart(2, "0")}`)) return
+  if (!(await tx.department.count({ where: { organizationId: user.organizationId, mainOrder: { not: null } } }))) return
+  const department = await tx.department.findFirst({ where: { id: departmentId, organizationId: user.organizationId }, select: { mainOrder: true } })
+  if (department && department.mainOrder == null) {
+    throw new UserInputError("From November 2026 choose one of the four main departments: Influence, AI Production, Crypto Marketing or Traffic Affiliate. Other functions are positions.")
+  }
 }
 
 async function setDepartmentFrom(tx: Tx, user: SessionUser, employeeId: string, departmentId: string, start: Date) {
@@ -984,6 +999,8 @@ export async function addSheetEmployee(
     if (!name) throw new UserInputError("Name is required.")
     const department = await tx.department.findFirst({ where: { id: input.departmentId, organizationId: user.organizationId, archivedAt: null } })
     if (!department) throw new UserInputError("Choose a department.")
+    // Employees are added to one of the main departments; a new job title is a position, never a department.
+    await assertMainDepartment(tx, user, department.id, m)
     const amount = parseCellAmount(input.fix, "FIX", { allowEmpty: false })!
     if (!["USD", "EUR", "GBP", "USDT"].includes(input.currency)) throw new UserInputError("Choose a supported currency.")
     const hireDate = input.hireDate ?? monthStart(m)
@@ -1555,6 +1572,9 @@ export async function carryForwardEmployees(user: SessionUser, m: Month, items: 
       })
       if (item.kind === "carry" && source) {
         const edit = item as CarryForwardItem
+        // An explicitly chosen new department must be main; a legacy one is carried as it was and flagged
+        // on the sheet for manual assignment (never guessed).
+        if (edit.departmentId && edit.departmentId !== source.departmentId) await assertMainDepartment(tx, user, edit.departmentId, m)
         const departmentId = edit.departmentId || source.departmentId
         if (departmentId) await setDepartmentFrom(tx, user, employee.id, departmentId, start)
         let positionId = edit.positionId !== undefined ? edit.positionId : source.positionId

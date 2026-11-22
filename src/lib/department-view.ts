@@ -9,8 +9,19 @@ export const ALL_DEPARTMENTS = "all"
 
 export const departmentViewActive = (monthKey: string) => monthKey >= DEPARTMENT_VIEW_FROM
 
+/**
+ * The financial sheet's department tabs from November 2026: exactly the departments marked main
+ * (Influence, AI Production, Crypto Marketing, Traffic Affiliate), in their fixed order. Every other
+ * function is a position, team or category inside one of them. Falls back to name matching only if
+ * no department is marked (an organization without the migration's codes).
+ */
+export function mainDepartmentTabs<T extends { name: string; mainOrder?: number | null; archived?: boolean }>(departments: T[]): T[] {
+  const main = departments.filter((d) => d.mainOrder != null && !d.archived).sort((a, b) => a.mainOrder! - b.mainOrder!)
+  return main.length ? main : orderDepartmentTabs(departments.filter((d) => !d.archived)).slice(0, 4)
+}
+
 /** Main directions first (by name, so existing records and ids are reused), then the rest in their order. */
-const PRIORITY = [/ai\s*prod/i, /influ/i, /traffic|cpa/i, /курс|course/i]
+const PRIORITY = [/influ/i, /ai\s*prod/i, /crypto|marketing/i, /traffic|cpa/i]
 
 export function orderDepartmentTabs<T extends { name: string }>(departments: T[]): T[] {
   const rank = (d: T) => {

@@ -21,7 +21,8 @@ import { ApprovalDialog, CarryForwardDialog, ConditionsDialog } from "./payroll-
 import { PositionsManager } from "./positions-manager"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import { withMonth } from "@/lib/month-nav"
-import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs, stableGridHeight } from "@/lib/department-view"
+import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, mainDepartmentTabs, stableGridHeight } from "@/lib/department-view"
+import { LegacyAssignment } from "./legacy-assignment"
 import {
   addEmployeeAction,
   archiveEmployeeAction,
@@ -161,10 +162,16 @@ export function FinancialSheet(props: Props) {
   // the client (no server round trip); earlier months keep the plain department filter.
   const deptView = departmentViewActive(monthKey)
   const searchParams = useSearchParams()
-  const tabs = useMemo(() => orderDepartmentTabs(props.departments.filter((d) => !d.archived)), [props.departments])
+  // Exactly the four main departments (Influence, AI Production, Crypto Marketing, Traffic Affiliate).
+  const tabs = useMemo(() => mainDepartmentTabs(props.departments), [props.departments])
+  const tabIds = useMemo(() => new Set(tabs.map((d) => d.id)), [tabs])
   const urlDept = searchParams.get(DEPARTMENT_PARAM)
   const [deptFilterState, setDeptFilterState] = useState("")
-  const deptFilter = deptView ? (urlDept === ALL_DEPARTMENTS ? "" : (urlDept ?? tabs[0]?.id ?? "")) : deptFilterState
+  const deptFilter = deptView ? (urlDept && tabIds.has(urlDept) ? urlDept : (tabs[0]?.id ?? "")) : deptFilterState
+  // People still in an old department this month: listed for an explicit choice, never moved by a guess.
+  const legacyRows = useMemo(() => (deptView && tabs.length ? rows.filter((r) => !r.departmentId || !tabIds.has(r.departmentId)) : []), [deptView, tabs.length, rows, tabIds])
+  // Department pickers from November offer the four main departments only.
+  const pickerDepartments = deptView && tabs.length ? tabs : departments
   const setDeptFilter = (id: string) => {
     if (!deptView) return setDeptFilterState(id)
     const next = new URLSearchParams(window.location.search)
@@ -717,7 +724,7 @@ export function FinancialSheet(props: Props) {
               <Copy /> {A.payroll.carry}
             </Button>
           )}
-          {perms.structure && (
+          {perms.structure && !deptView && (
             <Button variant="outline" size="sm" onClick={() => setPanel("addDepartment")}>
               <Plus /> {A.toolbar.department}
             </Button>
@@ -757,7 +764,7 @@ export function FinancialSheet(props: Props) {
 
       {deptView && tabs.length > 0 && (
         <nav aria-label={locale === "ru" ? "Отделы" : "Departments"} className="flex flex-wrap gap-2">
-          {[...tabs.map((d) => ({ id: d.id, name: d.name })), { id: "", name: locale === "ru" ? "Все отделы" : "All departments" }].map((d) => {
+          {tabs.map((d) => ({ id: d.id, name: d.name })).map((d) => {
             const active = deptFilter === d.id
             const count = d.id ? rows.filter((r) => r.departmentId === d.id).length : rows.length
             return (
@@ -776,6 +783,10 @@ export function FinancialSheet(props: Props) {
             )
           })}
         </nav>
+      )}
+
+      {legacyRows.length > 0 && (
+        <LegacyAssignment locale={locale} monthKey={monthKey} rows={legacyRows} mainDepartments={tabs} canEdit={editable && perms.employee} toast={toast} onChanged={refresh} />
       )}
 
       {rows.length === 0 && (
@@ -910,7 +921,8 @@ export function FinancialSheet(props: Props) {
                             <CellEditor
                               col={col}
                               value={editing.value}
-                              departments={departments}
+                              departments={pickerDepartments}
+                              allDepartments={departments}
                               positions={props.positions}
                               t={t}
                               onChange={(value) => setEditing((e) => (e ? { ...e, value } : e))}
@@ -1023,7 +1035,7 @@ export function FinancialSheet(props: Props) {
       </div>
       {grand.excluded > 0 && <p className="text-xs text-amber-300/80">{fill(t.sheet.mixedCurrency, { n: grand.excluded })}</p>}
 
-      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter} positions={props.positions} labels={{ position: A.positions.position, kpi: A.positions.kpi, commission: A.positions.commission, wallet: A.positions.wallet, none: A.positions.none }} monthKey={monthKey} departments={departments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
+      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter} positions={props.positions} labels={{ position: A.positions.position, kpi: A.positions.kpi, commission: A.positions.commission, wallet: A.positions.wallet, none: A.positions.none }} monthKey={monthKey} departments={pickerDepartments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
 
       {termsFor && (
         <TermsDialog
@@ -1091,7 +1103,7 @@ export function FinancialSheet(props: Props) {
         <ApprovalDialog monthKey={monthKey} monthTitle={monthTitle} locale={locale} t={A} canConfirm={perms.prepare && editable} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
       )}
       {panel === "carry" && (
-        <CarryForwardDialog monthKey={monthKey} monthTitle={monthTitle} departments={departments} positions={props.positions} locale={locale} t={A} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
+        <CarryForwardDialog monthKey={monthKey} monthTitle={monthTitle} departments={pickerDepartments} positions={props.positions} locale={locale} t={A} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
       )}
       {conditionsFor && (
         <ConditionsDialog
@@ -1344,6 +1356,7 @@ function CellEditor(props: {
   col: Col
   value: string
   departments: { id: string; name: string }[]
+  allDepartments?: { id: string; name: string }[]
   positions: Props["positions"]
   t: Dictionary
   onChange: (value: string) => void
@@ -1390,6 +1403,8 @@ function CellEditor(props: {
     return (
       <select ref={ref} value={value} onChange={(e) => props.onChange(e.target.value)} onBlur={() => finish(() => props.onCommit())} onKeyDown={onKeyDown} className={className}>
         {col.key === "department" && !value && <option value="">—</option>}
+        {/* An old department stays visible as the current value, but cannot be chosen again. */}
+        {col.key === "department" && value && !props.departments.some((d) => d.id === value) && <option value={value} disabled>{props.allDepartments?.find((d) => d.id === value)?.name ?? "—"}</option>}
         {options.map(([v, label]) => (
           <option key={v} value={v}>{label}</option>
         ))}

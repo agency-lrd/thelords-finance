@@ -137,7 +137,8 @@ async function main() {
     })
 
     await step("payroll from the financial sheet lands in the P&L and cash flow", async () => {
-      const hr = await prisma.department.findFirstOrThrow({ where: { code: "HR" } })
+      // From November 2026 employees belong to a main department; Crypto Marketing is overhead like HR was.
+      const hr = await prisma.department.findFirstOrThrow({ where: { code: "MARKETING" } })
       const nov = { year: 2026, month: 11 }
       const e = await sheet.addSheetEmployee(admin, nov, { name: "Payroll Test", departmentId: hr.id, fix: "1000", currency: "USD", hireDate: null }, prisma)
       await sheet.updateSheetCell(admin, nov, e.id, "wallet", "TRvCuZ4fbLRNxsVTY5cN8EqrrwFJ9nFKx3", prisma)

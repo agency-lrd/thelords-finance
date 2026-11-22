@@ -815,6 +815,8 @@ model Department {
   color              String?      @db.VarChar(20) // palette key for the department color in the financial sheet
   headEmployeeId     String?      @unique @map("head_employee_id") @db.Uuid
   sortOrder          Int          @default(0) @map("sort_order")
+  /// One of the main financial-sheet departments (from November 2026), in this order; null = not main.
+  mainOrder          Int?         @map("main_order") @db.SmallInt
   archivedAt         DateTime?    @map("archived_at") @db.Timestamptz(6)
   createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)

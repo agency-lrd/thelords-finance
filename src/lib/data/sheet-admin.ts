@@ -114,6 +114,7 @@ export async function listSheetDepartments(user: SessionUser, m: Month, db: Db =
       id: true,
       name: true,
       color: true,
+      mainOrder: true,
       archivedAt: true,
       assignments: { where: { isPrimary: true, OR: [{ validTo: null }, { validTo: { gt: start } }], employee: { archivedAt: null } }, select: { employeeId: true } },
       _count: { select: { journalLines: true, payrollItems: true, transactions: true, budgetLines: true, projects: true, assignments: true, children: true } },
@@ -124,6 +125,7 @@ export async function listSheetDepartments(user: SessionUser, m: Month, db: Db =
     name: d.name,
     color: (DEPARTMENT_COLORS as readonly string[]).includes(d.color ?? "") ? (d.color as DepartmentColor) : null,
     archived: !!d.archivedAt,
+    mainOrder: d.mainOrder,
     employees: new Set(d.assignments.map((a) => a.employeeId)).size,
     hasHistory: Object.values(d._count).some((n) => n > 0),
   }))
