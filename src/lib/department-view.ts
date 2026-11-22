@@ -32,7 +32,7 @@ export function orderDepartmentTabs<T extends { name: string }>(departments: T[]
 }
 
 /** Row heights of the sheet grid (px): header, data rows, department subtotal, grand total. */
-export const GRID_ROW = 36
+export const GRID_ROW = 44
 const GRID_SUBTOTAL = 32
 const GRID_HEAD = 40
 const GRID_FOOT = 40

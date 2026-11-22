@@ -21,6 +21,7 @@ import { ApprovalDialog, CarryForwardDialog, ConditionsDialog } from "./payroll-
 import { PositionsManager } from "./positions-manager"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import { withMonth } from "@/lib/month-nav"
+import { positionBadgeStyle } from "@/lib/position-color"
 import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, mainDepartmentTabs, stableGridHeight } from "@/lib/department-view"
 import { LegacyAssignment } from "./legacy-assignment"
 import {
@@ -230,11 +231,11 @@ export function FinancialSheet(props: Props) {
   const cols: Col[] = useMemo(() => {
     const canEdit = (p: boolean) => editable && p
     const base: Col[] = [
-      { key: "name", kind: "text", width: 190, field: "name", can: canEdit(perms.employee) },
-      { key: "department", kind: "select", width: 170, field: "department", can: canEdit(perms.employee) },
-      { key: "positionId", kind: "position", width: 190, field: "positionId", can: canEdit(perms.employee) },
-      { key: "fix", kind: "money", width: 120, field: "fix", can: canEdit(perms.salary), money: true },
-      { key: "terms", kind: "terms", width: 200, can: canEdit(perms.compensation) },
+      { key: "name", kind: "text", width: 210, field: "name", can: canEdit(perms.employee) },
+      { key: "department", kind: "select", width: 150, field: "department", can: canEdit(perms.employee) },
+      { key: "positionId", kind: "position", width: 260, field: "positionId", can: canEdit(perms.employee) },
+      { key: "fix", kind: "money", width: 170, field: "fix", can: canEdit(perms.salary), money: true },
+      { key: "terms", kind: "terms", width: 240, can: canEdit(perms.compensation) },
       { key: "kpiTarget", kind: "money", width: 120, field: "kpiTarget", can: canEdit(perms.kpi), money: true },
       { key: "kpiActual", kind: "money", width: 120, field: "kpiActual", can: canEdit(perms.kpi), money: true },
       { key: "commission", kind: "money", width: 100, field: "commission", can: canEdit(perms.compensation) },
@@ -910,7 +911,9 @@ export function FinancialSheet(props: Props) {
                           }}
                           onDoubleClick={() => col.kind !== "check" && beginEdit()}
                           className={cn(
-                            "relative h-9 overflow-hidden border-b border-r border-border/50 px-3 text-ellipsis whitespace-nowrap",
+                            "relative h-11 overflow-hidden border-b border-r border-border/50 px-3 text-ellipsis whitespace-nowrap",
+                            // Position titles and prorated FIX use up to two lines inside the fixed row height.
+                            (col.key === "positionId" || col.key === "fix") && "py-1 whitespace-normal",
                             col.money && "text-right font-mono tabular-nums",
                             c === 0 && "sticky left-0 z-10 bg-[#0f0c10] font-medium",
                             !col.can && col.kind !== "output" && "text-foreground/90",
@@ -1185,7 +1188,7 @@ function CellView(props: {
         <span className="flex items-center gap-2">
           {/* Position color as a thin indicator beside the name (no full-row background). */}
           <span aria-hidden className="h-4 w-1 shrink-0 rounded-full" style={{ backgroundColor: row.positionColor ?? "transparent" }} />
-          <span className="truncate">{raw}</span>
+          <span className="truncate" title={raw}>{raw}</span>
           {row.isTeamLead && <span className="rounded bg-primary/20 px-1 text-[10px] font-bold text-primary">ТЛ</span>}
           {row.status !== "ACTIVE" && <span className="text-[10px] uppercase text-muted-foreground">{t.sheet.employeeStatus[row.status as keyof Dictionary["sheet"]["employeeStatus"]]}</span>}
           <span className="ml-auto hidden gap-1 group-hover:flex">
@@ -1207,34 +1210,46 @@ function CellView(props: {
           </span>
         </span>
       )
-    case "positionId":
-      // A subtle badge: colored dot and border, tinted background, readable light text.
-      return row.positionName ? (
+    case "positionId": {
+      // Badge in the position's own color (background + border); text color picked for contrast.
+      // Full title, wrapping to two lines; the tooltip carries it for unusually long names.
+      if (!row.positionName) return <span className="text-[11px] text-muted-foreground">{props.noPositionLabel}</span>
+      const badge = positionBadgeStyle(row.positionColor)
+      return (
         <span
-          className="inline-flex max-w-full items-center gap-1.5 truncate rounded-full border px-2 py-0.5 text-[11px] font-medium text-foreground"
-          style={row.positionColor ? { borderColor: `${row.positionColor}80`, backgroundColor: `${row.positionColor}1F` } : undefined}
+          title={row.positionName}
+          className={cn(
+            "inline-flex max-w-full items-center rounded-lg border px-2 py-0.5 text-[11.5px] leading-[1.25] font-semibold [overflow-wrap:anywhere]",
+            !badge && "border-border bg-white/[0.04] text-foreground",
+          )}
+          style={badge ?? undefined}
         >
-          <span className="size-2 shrink-0 rounded-full bg-muted-foreground" style={row.positionColor ? { backgroundColor: row.positionColor } : undefined} />
-          <span className="truncate">{row.positionName}</span>
+          <span className="line-clamp-2">{row.positionName}</span>
         </span>
-      ) : (
-        <span className="text-[11px] text-muted-foreground">{props.noPositionLabel}</span>
       )
+    }
     case "department":
       return row.departmentName ? (
-        <span className={cn("inline-flex max-w-full items-center truncate rounded-full px-2.5 py-0.5 text-[11px] font-semibold", props.palette.chip)}>{row.departmentName}</span>
+        <span title={row.departmentName} className={cn("inline-block max-w-full truncate rounded-full px-2.5 py-0.5 align-middle text-[11px] font-semibold", props.palette.chip)}>{row.departmentName}</span>
       ) : (
         <span className="text-muted-foreground">—</span>
       )
     case "fix":
+      // Prorated months: the workday badge sits above the amount (two lines), never over it.
       return (
         <span
-          className="flex items-center justify-end gap-1.5 font-semibold"
+          className="flex flex-col items-end justify-center gap-0.5 leading-tight font-semibold"
           title={row.proration && row.fixProrated ? fill(props.factTexts.prorated, { fix: money(raw || null), days: String(row.proration.days), divisor: String(row.proration.divisor), amount: money(row.fixProrated) }) : undefined}
         >
-          {!row.salaryApproved && <span title={t.sheet.salaryPending}><AlertTriangle className="size-3 text-amber-400" /></span>}
-          {row.proration && <span className="rounded bg-sky-500/15 px-1 font-sans text-[10px] font-medium text-sky-300">{fill(props.factTexts.days, { days: String(row.proration.days), divisor: String(row.proration.divisor) })}</span>}
-          {money(raw || null)}
+          {row.proration && (
+            <span className="rounded bg-sky-500/15 px-1 font-sans text-[10px] leading-4 font-medium whitespace-nowrap text-sky-300">
+              {fill(props.factTexts.days, { days: String(row.proration.days), divisor: String(row.proration.divisor) })}
+            </span>
+          )}
+          <span className="flex max-w-full items-center gap-1 whitespace-nowrap">
+            {!row.salaryApproved && <span title={t.sheet.salaryPending}><AlertTriangle className="size-3 text-amber-400" /></span>}
+            {money(raw || null)}
+          </span>
         </span>
       )
     case "commission":

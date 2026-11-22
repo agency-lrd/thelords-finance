@@ -7,14 +7,13 @@ import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/form-controls"
 import type { SheetAdminTexts } from "@/lib/i18n/sheet-admin"
+import { POSITION_PALETTE, positionBadgeStyle } from "@/lib/position-color"
 
 import { createPositionAction, updatePositionAction } from "./actions"
 import { Panel } from "./sheet-admin"
 
 type Position = { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number; color: string | null }
 
-/** Palette tuned for the dark theme (readable as a dot and a tinted badge). */
-export const POSITION_PALETTE = ["#EC4899", "#F472B6", "#A855F7", "#8B5CF6", "#6366F1", "#3B82F6", "#22D3EE", "#14B8A6", "#22C55E", "#84CC16", "#EAB308", "#F59E0B", "#F97316", "#EF4444", "#94A3B8", "#E5E7EB"]
 
 function ColorPicker(props: { value: string | null; labels: { reset: string; custom: string }; onPick: (color: string | null) => void }) {
   const [hex, setHex] = useState(props.value ?? "")
@@ -80,7 +79,8 @@ export function PositionsManager(props: { t: SheetAdminTexts; positions: Positio
         )}
       </span>
       <span className="min-w-0 flex-1 truncate">
-        {p.name}
+        {/* Same badge as on the financial sheet: a live preview of the chosen color. */}
+        <span className="rounded-lg border border-border px-2 py-0.5 text-[12px] font-semibold" style={positionBadgeStyle(p.color) ?? undefined}>{p.name}</span>
         {p.nameRu && <span className="ml-2 text-[11px] text-muted-foreground">{p.nameRu}</span>}
         {p.employees > 0 && <span className="ml-2 text-[10px] text-muted-foreground/70">{p.employees} {P.employees}</span>}
       </span>
