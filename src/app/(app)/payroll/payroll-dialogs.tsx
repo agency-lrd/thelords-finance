@@ -180,10 +180,10 @@ export function ApprovalDialog({ monthKey, monthTitle, locale, t, canConfirm, to
 }
 
 type CarryPreview = Extract<Awaited<ReturnType<typeof carryForwardPreviewAction>>, { ok: true }>["preview"]
-type Draft = { selected: boolean; fix: string; currency: string; departmentId: string; ratePct: string; kpiTarget: string; kpiRecurring: boolean }
+type Draft = { selected: boolean; fix: string; currency: string; departmentId: string; positionId: string; ratePct: string; kpiTarget: string; kpiRecurring: boolean }
 
 /** Moves employees from the immediately previous, approved month (preview, choose, edit, confirm). */
-export function CarryForwardDialog({ monthKey, departments, locale, t, toast, onChanged, onClose }: { monthKey: string; monthTitle: string; departments: { id: string; name: string }[]; locale: Locale; t: SheetAdminTexts; toast: Toast; onChanged: () => void; onClose: () => void }) {
+export function CarryForwardDialog({ monthKey, departments, positions, locale, t, toast, onChanged, onClose }: { monthKey: string; monthTitle: string; departments: { id: string; name: string }[]; positions: { id: string; name: string; archived: boolean }[]; locale: Locale; t: SheetAdminTexts; toast: Toast; onChanged: () => void; onClose: () => void }) {
   const P = t.payroll
   const [preview, setPreview] = useState<CarryPreview | null>(null)
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
@@ -195,7 +195,7 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
       if (!alive) return
       if (!r.ok) return toast(r.message, "error")
       setPreview(r.preview)
-      setDrafts(Object.fromEntries(r.preview.employees.map((e) => [e.employeeId, { selected: r.preview.previousApproved && !e.present && !e.terminated, fix: e.fix ?? "", currency: e.currency, departmentId: e.departmentId ?? "", ratePct: e.ratePct ?? "", kpiTarget: e.kpiTarget ?? "", kpiRecurring: e.kpiRecurring }])))
+      setDrafts(Object.fromEntries(r.preview.employees.map((e) => [e.employeeId, { selected: r.preview.previousApproved && !e.present && !e.terminated, fix: e.fix ?? "", currency: e.currency, departmentId: e.departmentId ?? "", positionId: e.positionId ?? "", ratePct: e.ratePct ?? "", kpiTarget: e.kpiTarget ?? "", kpiRecurring: e.kpiRecurring }])))
     })
     return () => {
       alive = false
@@ -235,6 +235,7 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
                       <th className="px-2 py-1.5" />
                       <th className="px-2 py-1.5 text-left">{L.employee}</th>
                       <th className="px-2 py-1.5 text-left">{L.department}</th>
+                      <th className="px-2 py-1.5 text-left">{t.positions.position}</th>
                       <th className="px-2 py-1.5 text-right">FIX</th>
                       <th className="px-2 py-1.5 text-right">%</th>
                       <th className="px-2 py-1.5 text-right">KPI Profit</th>
@@ -260,6 +261,13 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
                               {departments.map((dep) => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
                             </Select>
                             <p className="text-[10px] text-muted-foreground">{L.was}: {e.departmentName ?? "—"}</p>
+                          </td>
+                          <td className="px-2 py-1">
+                            <Select disabled={!can} value={d.positionId} onChange={(x) => set(e.employeeId, { positionId: x.target.value })} className="h-7 w-44 text-xs">
+                              <option value="">{t.positions.none}</option>
+                              {positions.filter((p) => !p.archived || p.id === e.positionId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </Select>
+                            <p className="text-[10px] text-muted-foreground">{L.was}: {e.positionName ?? t.positions.none}</p>
                           </td>
                           <td className="px-2 py-1 text-right"><Input disabled={!can} value={d.fix} onChange={(x) => set(e.employeeId, { fix: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-24 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{L.was}: {e.fix ?? "—"} {d.currency}</span></td>
                           <td className="px-2 py-1 text-right">{["NONE", "PCT_ABOVE_KPI", "PCT_OF_PROFIT", "PCT_IF_KPI_MET"].includes(e.model) ? <><Input disabled={!can} value={d.ratePct} onChange={(x) => set(e.employeeId, { ratePct: x.target.value })} inputMode="decimal" className="ml-auto h-7 w-16 text-right font-mono" /><span className="text-[10px] text-muted-foreground">{L.was}: {e.ratePct ? `${e.ratePct}%` : "—"}</span></> : <span className="text-muted-foreground">—</span>}</td>
@@ -317,6 +325,8 @@ export function CarryForwardDialog({ monthKey, departments, locale, t, toast, on
                     kpiTarget: d.kpiTarget ? (normalizeNumber(d.kpiTarget) ?? d.kpiTarget) : null,
                     kpiRecurring: d.kpiRecurring,
                     ratePct: d.ratePct && d.ratePct !== e.ratePct ? d.ratePct : null,
+                    // Only an explicit change is sent; otherwise last month's position carries over.
+                    ...(d.positionId !== (e.positionId ?? "") ? { positionId: d.positionId || null } : {}),
                   }
                 })
                 const r = await carryForwardAction(monthKey, items, [...addNew])

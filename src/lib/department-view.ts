@@ -1,9 +1,9 @@
 /**
- * Department view of the financial sheet (from December 2026): tabs per department, each with its
+ * Department view of the financial sheet (from November 2026): tabs per department, each with its
  * employees, recurring and one-time costs, income and profitability. Months before keep their layout.
  * Shared by server and client code.
  */
-export const DEPARTMENT_VIEW_FROM = "2026-12"
+export const DEPARTMENT_VIEW_FROM = "2026-11"
 export const DEPARTMENT_PARAM = "dept"
 export const ALL_DEPARTMENTS = "all"
 

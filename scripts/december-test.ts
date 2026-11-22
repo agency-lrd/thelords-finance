@@ -35,11 +35,11 @@ async function main() {
   let novCosts = ""
 
   try {
-    await step("department tabs: main directions first, from December 2026 only", async () => {
+    await step("department tabs: main directions first, from November 2026", async () => {
       const ordered = view.orderDepartmentTabs([{ name: "HR" }, { name: "Influence" }, { name: "Запуски курсов" }, { name: "Traffic CPA" }, { name: "AI Production" }])
       assert.deepEqual(ordered.map((x) => x.name), ["AI Production", "Influence", "Traffic CPA", "Запуски курсов", "HR"])
-      assert.equal(view.departmentViewActive("2026-11"), false)
-      assert.equal(view.departmentViewActive("2026-12"), true)
+      assert.equal(view.departmentViewActive("2026-10"), false)
+      assert.equal(view.departmentViewActive("2026-11"), true, "activation date: November 2026")
       assert.equal(view.departmentViewActive("2027-01"), true)
     })
 

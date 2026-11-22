@@ -7,6 +7,7 @@ import { listFinancialAccounts } from "@/lib/data/accounts"
 import { listSheetDepartments } from "@/lib/data/sheet-admin"
 import { getProjectLedger } from "@/lib/data/project-ledger"
 import { periodInfo } from "@/lib/data/periods"
+import { listPositions } from "@/lib/data/positions"
 import { getSheet } from "@/lib/data/sheet"
 import { getDictionary } from "@/lib/i18n/server"
 import { Decimal } from "@/lib/money"
@@ -31,11 +32,12 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
   const month = parseMonth(typeof params.month === "string" ? params.month : null) ?? currentMonth()
   const { locale } = await getDictionary()
   const showLedger = can(user, "project_finance:read")
-  const [sheet, departments, accounts, ledger] = await Promise.all([
+  const [sheet, departments, accounts, ledger, positions] = await Promise.all([
     getSheet(user, month),
     listSheetDepartments(user, month),
     can(user, "payroll:pay") || can(user, "project_finance:manage") ? listFinancialAccounts(user) : Promise.resolve([]),
     showLedger ? getProjectLedger(user, month) : Promise.resolve(null),
+    listPositions(user),
   ])
   const showSalary = can(user, "salary:read")
   const period = await periodInfo(user, month)
@@ -64,6 +66,7 @@ async function Sheet({ searchParams }: { searchParams: PageProps<"/payroll">["se
       // Salary figures are removed server-side for users without salary:read.
       rows={showSalary ? sheet.rows : sheet.rows.map((r) => ({ ...r, fix: null, fixProrated: null, variable: "0", bonus: "0", deduction: "0", calculated: "0", fact: null, factReason: null, payable: "0", kpiBonusAuto: "0", kpiBonusOverride: null, kpiBonusReason: null, approved: null, paid: "0", outstanding: null }))}
       departments={departments}
+      positions={positions}
       accounts={can(user, "payroll:pay") ? openAccounts : []}
       perms={{
         employee: can(user, "employee:manage"),

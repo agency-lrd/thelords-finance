@@ -108,9 +108,11 @@ export type MonthSnapshot = {
   kpiBonusAuto?: string
   kpiBonusOverride?: string | null
   kpiBonusReason?: string | null
+  positionId?: string | null
+  positionName?: string | null
 }
 
-const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated", "fact", "factReason", "payable", "commissionPct", "proration", "fixProrated", "kpiBonusAuto", "kpiBonusOverride", "kpiBonusReason"]
+const SNAPSHOT_KEYS: (keyof MonthSnapshot)[] = ["firstName", "lastName", "employeeNumber", "isTeamLead", "status", "notes", "terminationDate", "salaryApproved", "kpiTargetRecurring", "payBasis", "name", "departmentId", "departmentName", "position", "hireDate", "fix", "currency", "terms", "rule", "kpiTarget", "kpiActual", "kpiTargetInherited", "variable", "bonus", "deduction", "calculated", "fact", "factReason", "payable", "commissionPct", "proration", "fixProrated", "kpiBonusAuto", "kpiBonusOverride", "kpiBonusReason", "positionId", "positionName"]
 
 /** The snapshot fields of a row (keys a snapshot lacks are left out, so live values are not blanked). */
 export function pickSnapshot(source: MonthSnapshot): MonthSnapshot {
@@ -163,7 +165,7 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       OR: [{ archivedAt: null }, ...(run ? [{ payrollItems: { some: { payrollRunId: run.id } } }] : [])],
     },
     include: {
-      assignments: { where: { isPrimary: true, ...overlapsMonth(m) }, include: { department: true }, orderBy: { validFrom: "desc" }, take: 1 },
+      assignments: { where: { isPrimary: true, ...overlapsMonth(m) }, include: { department: true, position: { select: { name: true, nameRu: true, sortOrder: true } } }, orderBy: { validFrom: "desc" }, take: 1 },
       salaryConditions: { where: overlapsMonth(m), orderBy: { validFrom: "desc" }, take: 1 },
       compensationScopes: {
         where: overlapsMonth(m),
@@ -229,6 +231,9 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       departmentId: assignment?.departmentId ?? null,
       departmentName: assignment?.department.name ?? null,
       teamId: assignment?.teamId ?? null,
+      /** Position (job title) for this month; dated on the assignment, frozen in approved snapshots. */
+      positionId: assignment?.positionId ?? null,
+      positionName: assignment?.position?.name ?? null,
       currency: salary?.currency ?? user.baseCurrency,
       payBasis: salary?.payBasis ?? "MONTHLY",
       fix: str(salary?.baseAmount),
@@ -282,6 +287,8 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
   const frozen = run && !["DRAFT", "CALCULATED"].includes(run.status)
   // The frozen assignment is a department id: a department renamed later shows its current name.
   const departmentNames = frozen ? new Map((await db.department.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true } })).map((d) => [d.id, d.name])) : new Map<string, string>()
+  // Positions: current names and order (a renamed or reordered position shows its current name/order).
+  const positions = new Map((await db.position.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true, sortOrder: true } })).map((p) => [p.id, p]))
   for (const [i, r] of rows.entries()) {
     const member = employees.find((e) => e.id === r.employeeId)?.monthMemberships[0]
     const snap = frozen ? (member?.snapshot as MonthSnapshot | null) : null
@@ -289,11 +296,16 @@ export async function getSheet(user: SessionUser, m: Month, db: Db = prisma, opt
       const frozenRow = pickSnapshot(snap)
       // Snapshots from before FACT PAYMENT and proration existed: the approved payslip amount is the payable.
       const legacy = frozenRow.payable === undefined ? { fact: null, factReason: null, payable: r.approved ?? snap.calculated, proration: null, fixProrated: null } : {}
-      rows[i] = { ...r, ...(frozenRow as unknown as Partial<typeof r>), ...legacy, departmentName: ((snap.departmentId && departmentNames.get(snap.departmentId)) || snap.departmentName) as typeof r.departmentName, stale: false }
+      // Snapshots from before positions existed keep the employee's position of that period.
+      const position = snap.positionId === undefined ? { positionId: r.positionId, positionName: r.positionName } : { positionId: snap.positionId, positionName: (snap.positionId && positions.get(snap.positionId)?.name) || snap.positionName || null }
+      rows[i] = { ...r, ...(frozenRow as unknown as Partial<typeof r>), ...legacy, ...position, departmentName: ((snap.departmentId && departmentNames.get(snap.departmentId)) || snap.departmentName) as typeof r.departmentName, stale: false }
     }
   }
 
-  rows.sort((a, b) => (a.departmentName ?? "~").localeCompare(b.departmentName ?? "~") || Number(b.isTeamLead) - Number(a.isTeamLead) || a.name.localeCompare(b.name))
+  // Inside a department, employees follow the position order (no position last: "Без должности"), then
+  // team leads, then name; the order never affects totals.
+  const positionRank = (id: string | null) => (id && positions.has(id) ? positions.get(id)!.sortOrder : Number.MAX_SAFE_INTEGER)
+  rows.sort((a, b) => (a.departmentName ?? "~").localeCompare(b.departmentName ?? "~") || positionRank(a.positionId) - positionRank(b.positionId) || Number(b.isTeamLead) - Number(a.isTeamLead) || a.name.localeCompare(b.name))
 
   const editable =
     (!run || run.status === "DRAFT" || run.status === "CALCULATED") &&
@@ -385,6 +397,7 @@ export type SheetField =
   | "fact"
   | "commission"
   | "kpiBonus"
+  | "positionId"
 
 const FIELD_PERMISSION = {
   name: "employee:manage",
@@ -404,6 +417,7 @@ const FIELD_PERMISSION = {
   fact: "salary:manage",
   commission: "compensation:manage",
   kpiBonus: "compensation:manage",
+  positionId: "employee:manage",
 } as const satisfies Record<SheetField, string>
 
 /** Fields whose change alters pay: a confirmed row is un-confirmed so it is re-checked. */
@@ -474,6 +488,7 @@ export function cellValue(row: SheetRow, field: SheetField): string {
     case "fact": return row.fact ?? ""
     case "commission": return row.commissionPct ?? ""
     case "kpiBonus": return row.kpiBonusOverride ?? ""
+    case "positionId": return row.positionId ?? ""
   }
 }
 
@@ -585,6 +600,9 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
         })
         break
       }
+      case "positionId":
+        await setPositionFrom(tx, user, employeeId, value || null, m)
+        break
       case "kpiBonus": {
         // "Изменить бонус вручную": replaces the automatic KPI bonus; empty = back to the formula.
         const amount = parseCellAmount(value, "KPI Bonus")
@@ -720,8 +738,29 @@ async function setDepartmentFrom(tx: Tx, user: SessionUser, employeeId: string, 
   }
   if (current) await tx.employeeAssignment.update({ where: { id: current.id }, data: { validTo: start } })
   await tx.employeeAssignment.create({
-    data: { employeeId, departmentId, isPrimary: true, allocationRate: 1, validFrom: start, validTo: current?.validTo ?? next?.validFrom ?? null },
+    data: { employeeId, departmentId, positionId: current?.positionId ?? null, isPrimary: true, allocationRate: 1, validFrom: start, validTo: current?.validTo ?? next?.validFrom ?? null },
   })
+}
+
+/**
+ * Sets the employee's position from the month's first day (dated like the department; earlier months,
+ * and approved snapshots, keep theirs). Never changes FIX, KPI target or commission.
+ */
+async function setPositionFrom(tx: Tx, user: SessionUser, employeeId: string, positionId: string | null, m: Month) {
+  if (positionId && !(await tx.position.findFirst({ where: { id: positionId, organizationId: user.organizationId, archivedAt: null } }))) throw new UserInputError("Position not found.")
+  const start = monthStart(m)
+  const current = await tx.employeeAssignment.findFirst({
+    where: { employeeId, isPrimary: true, validFrom: { lte: monthEnd(m) }, OR: [{ validTo: null }, { validTo: { gt: start } }] },
+    orderBy: { validFrom: "desc" },
+  })
+  if (!current) throw new UserInputError("Assign the employee to a department first.")
+  if (current.positionId === positionId) return
+  if (current.validFrom.getTime() >= start.getTime()) {
+    await tx.employeeAssignment.update({ where: { id: current.id }, data: { positionId } })
+  } else {
+    await tx.employeeAssignment.update({ where: { id: current.id }, data: { validTo: start } })
+    await tx.employeeAssignment.create({ data: { employeeId, departmentId: current.departmentId, teamId: current.teamId, positionId, isPrimary: true, allocationRate: current.allocationRate, validFrom: start, validTo: current.validTo } })
+  }
 }
 
 /**
@@ -747,7 +786,7 @@ export async function setEmployeeTeam(user: SessionUser, m: Month, employeeId: s
       await tx.employeeAssignment.update({ where: { id: current.id }, data: { teamId } })
     } else {
       await tx.employeeAssignment.update({ where: { id: current.id }, data: { validTo: start } })
-      await tx.employeeAssignment.create({ data: { employeeId, departmentId: current.departmentId, teamId, isPrimary: true, allocationRate: current.allocationRate, validFrom: start, validTo: current.validTo } })
+      await tx.employeeAssignment.create({ data: { employeeId, departmentId: current.departmentId, teamId, positionId: current.positionId, isPrimary: true, allocationRate: current.allocationRate, validFrom: start, validTo: current.validTo } })
     }
     await audit(tx, user, "employee.team", "employee", employeeId, { month: `${m.year}-${String(m.month).padStart(2, "0")}`, teamId })
   })
@@ -933,7 +972,7 @@ export async function setCompensationRule(user: SessionUser, m: Month, employeeI
 export async function addSheetEmployee(
   user: SessionUser,
   m: Month,
-  input: { name: string; departmentId: string; fix: string; currency: string; hireDate: Date | null; commissionPct?: string | null },
+  input: { name: string; departmentId: string; fix: string; currency: string; hireDate: Date | null; commissionPct?: string | null; positionId?: string | null },
   db: Db = prisma,
 ) {
   for (const p of ["employee:manage", "salary:manage"] as const) {
@@ -964,7 +1003,8 @@ export async function addSheetEmployee(
         status: "ACTIVE",
       },
     })
-    await tx.employeeAssignment.create({ data: { employeeId: employee.id, departmentId: department.id, isPrimary: true, allocationRate: 1, validFrom: effective } })
+    if (input.positionId && !(await tx.position.findFirst({ where: { id: input.positionId, organizationId: user.organizationId, archivedAt: null } }))) throw new UserInputError("Position not found.")
+    await tx.employeeAssignment.create({ data: { employeeId: employee.id, departmentId: department.id, positionId: input.positionId || null, isPrimary: true, allocationRate: 1, validFrom: effective } })
     const approved = user.permissions.has("salary:approve")
     await tx.salaryCondition.create({
       data: {
@@ -1416,6 +1456,8 @@ export type CarryForwardItem = {
   kpiTarget?: string | null
   kpiRecurring?: boolean
   ratePct?: string | null
+  /** Position for the new month (undefined = the previous month's; null = none). */
+  positionId?: string | null
 }
 
 const previousMonth = (m: Month): Month => (m.month === 1 ? { year: m.year - 1, month: 12 } : { year: m.year, month: m.month - 1 })
@@ -1455,6 +1497,8 @@ export async function carryForwardPreview(user: SessionUser, m: Month, db: Db = 
       terminated: !!r.terminationDate && new Date(`${r.terminationDate}T00:00:00Z`) < start,
       departmentId: r.departmentId,
       departmentName: r.departmentName,
+      positionId: r.positionId,
+      positionName: r.positionName,
       fix: r.fix,
       currency: r.currency,
       terms: r.terms,
@@ -1513,6 +1557,10 @@ export async function carryForwardEmployees(user: SessionUser, m: Month, items: 
         const edit = item as CarryForwardItem
         const departmentId = edit.departmentId || source.departmentId
         if (departmentId) await setDepartmentFrom(tx, user, employee.id, departmentId, start)
+        let positionId = edit.positionId !== undefined ? edit.positionId : source.positionId
+        // A position archived since last month is not carried into a new month.
+        if (positionId && edit.positionId === undefined && !(await tx.position.findFirst({ where: { id: positionId, archivedAt: null } }))) positionId = null
+        await setPositionFrom(tx, user, employee.id, positionId ?? null, m)
         const fix = edit.fix ? parseCellAmount(edit.fix, "FIX", { allowEmpty: false }) : source.fix ? new Decimal(source.fix) : null
         if (fix) await setSalaryFrom(tx, user, employee, m, { amount: fix, currency: edit.currency || source.currency }, "future")
         if (source.rule.model === "NONE" && edit.ratePct && Number(edit.ratePct) > 0 && user.permissions.has("compensation:manage")) {

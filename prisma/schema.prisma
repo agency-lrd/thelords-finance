@@ -586,6 +586,7 @@ model Organization {
   monthEmployees   PayrollMonthEmployee[]
   vaultSecrets     VaultSecret[]
   financialPlans   FinancialPlan[]
+  positions        Position[]
 
   @@map("organizations")
 }
@@ -920,6 +921,8 @@ model EmployeeAssignment {
   employeeId     String    @map("employee_id") @db.Uuid
   departmentId   String    @map("department_id") @db.Uuid
   teamId         String?   @map("team_id") @db.Uuid
+  /// Position (job title) for this period; dated like the department.
+  positionId     String?   @map("position_id") @db.Uuid
   allocationRate Decimal   @default(1) @map("allocation_rate") @db.Decimal(12, 8) // share of time/cost; rates per employee sum to 1
   isPrimary      Boolean   @default(true) @map("is_primary")
   validFrom      DateTime  @map("valid_from") @db.Date
@@ -929,9 +932,11 @@ model EmployeeAssignment {
   employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   team       Team?      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  position   Position?  @relation(fields: [positionId], references: [id], onDelete: Restrict)
 
   @@index([employeeId, validFrom])
   @@index([departmentId])
+  @@index([positionId])
   @@map("employee_assignments")
 }
 
@@ -2259,4 +2264,22 @@ model FinancialPlan {
 
   @@index([organizationId, year, month])
   @@map("financial_plans")
+}
+
+/// Employee position (job title) directory, ordered explicitly; independent of departments.
+model Position {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  nameRu         String?   @map("name_ru")
+  sortOrder      Int       @default(0) @map("sort_order")
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  assignments  EmployeeAssignment[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, sortOrder])
+  @@map("positions")
 }

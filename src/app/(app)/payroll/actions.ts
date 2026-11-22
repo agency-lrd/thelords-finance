@@ -39,6 +39,7 @@ import {
   setSheetDepartmentArchived,
 } from "@/lib/data/sheet-admin"
 import { setPeriodStatus, type PeriodAction } from "@/lib/data/periods"
+import { createPosition, listPositions, updatePosition } from "@/lib/data/positions"
 import { addLedgerEntry, carryRecurringCosts, createLedgerTeam, deleteLedgerEntry, recordSettlement, recurringCostPreview, setLedgerConfirmed, updateLedgerEntry, updateLedgerTeam, type CarryCostItem } from "@/lib/data/project-ledger"
 import { createCategory, moveCategory } from "@/lib/data/categories"
 import { toActionError, UserInputError } from "@/lib/forms"
@@ -48,7 +49,7 @@ import { parseMonth } from "@/lib/period"
 
 export type CellResult = { ok: true; unconfirmed?: boolean } | { ok: false; message: string; conflict?: { current: string } }
 
-const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet", "fact", "commission", "kpiBonus"]
+const FIELDS: SheetField[] = ["name", "fix", "currency", "kpiTarget", "kpiActual", "bonus", "deduction", "department", "position", "status", "isTeamLead", "notes", "hireDate", "wallet", "fact", "commission", "kpiBonus", "positionId"]
 
 function month(key: string) {
   const m = parseMonth(key)
@@ -122,6 +123,11 @@ const RU: [RegExp, string | ((m: RegExpExecArray) => string)][] = [
   [/Enter the reason for cancelling the approval/, "Укажите причину отмены утверждения."],
   [/^(.+) is not approved\.$/, (m) => `${m[1]} не утверждён.`],
   [/Salary payments are already recorded for (.+)\. Approval/, (m) => `За ${m[1]} уже записаны выплаты зарплаты. Отменить утверждение можно только до первой выплаты: сначала сторнируйте выплаты.`],
+  [/Position not found/, "Должность не найдена или в архиве."],
+  [/A position with this name already exists/, "Такая должность уже есть."],
+  [/This position exists in the archive/, "Такая должность есть в архиве — восстановите её."],
+  [/Position name: 1 to 80 characters/, "Название должности: от 1 до 80 символов."],
+  [/You do not have permission to manage positions/, "Недостаточно прав для управления должностями."],
   [/Enter the reason for the manual KPI bonus/, "Укажите причину ручного изменения KPI-бонуса."],
   [/^KPI Bonus: "(.+)" is not a number/, (m) => `KPI Bonus: «${m[1]}» — не число.`],
   [/Enter the wallet address or payout destination/, "Введите адрес кошелька или реквизиты выплаты (от 3 до 200 символов)."],
@@ -205,6 +211,7 @@ export async function carryForwardAction(monthKey: string, items: CarryForwardIt
       kpiTarget: typeof i.kpiTarget === "string" ? i.kpiTarget : null,
       kpiRecurring: i.kpiRecurring === true,
       ratePct: typeof i.ratePct === "string" ? i.ratePct : null,
+      ...(i.positionId !== undefined ? { positionId: typeof i.positionId === "string" && i.positionId ? i.positionId : null } : {}),
     }))
     const result = await carryForwardEmployees(user, month(monthKey), clean, undefined, { addNew: (Array.isArray(addNew) ? addNew : []).filter((x) => typeof x === "string") })
     revalidatePath("/employees")
@@ -242,12 +249,17 @@ export async function editConditionsAction(
 
 export async function addEmployeeAction(
   monthKey: string,
-  input: { name: string; departmentId: string; fix: string; currency: string; hireDate: string },
+  input: { name: string; departmentId: string; fix: string; currency: string; hireDate: string; positionId?: string; kpiTarget?: string; commissionPct?: string; wallet?: string },
 ): Promise<CellResult> {
   try {
     const user = await authorize("employee:manage")
     const hireDate = /^\d{4}-\d{2}-\d{2}$/.test(input.hireDate) ? new Date(`${input.hireDate}T00:00:00Z`) : null
-    await addSheetEmployee(user, month(monthKey), { ...input, hireDate })
+    const m = month(monthKey)
+    const commission = typeof input.commissionPct === "string" && input.commissionPct.trim() ? input.commissionPct.trim().replace(",", ".") : undefined
+    const employee = await addSheetEmployee(user, m, { name: input.name, departmentId: input.departmentId, fix: input.fix, currency: input.currency, hireDate, positionId: input.positionId || null, commissionPct: commission })
+    // Optional fields of the new-employee form, saved through the normal cell rules (permissions, audit).
+    if (input.kpiTarget?.trim() && user.permissions.has("kpi:manage")) await updateSheetCell(user, m, employee.id, "kpiTarget", input.kpiTarget)
+    if (input.wallet?.trim() && user.permissions.has("wallet:manage")) await updateSheetCell(user, m, employee.id, "wallet", input.wallet)
     revalidatePath("/employees")
     return done()
   } catch (error) {
@@ -602,6 +614,40 @@ export async function moveDepartmentAction(id: string, direction: "up" | "down")
   try {
     await moveDepartment(await authorize("structure:manage"), id, direction === "up" ? "up" : "down")
     revalidatePath("/structure")
+    return done()
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+// ── Positions (job title directory) ──
+
+export async function positionsAction() {
+  try {
+    return { ok: true as const, positions: await listPositions(await authorize("employee:read")) }
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+export async function createPositionAction(name: string, nameRu: string | null): Promise<CellResult> {
+  try {
+    await createPosition(await authorize("employee:manage"), { name, nameRu })
+    return done()
+  } catch (error) {
+    return failRu(error)
+  }
+}
+
+export async function updatePositionAction(id: string, input: { name?: string; nameRu?: string | null; archived?: boolean; move?: "up" | "down" }): Promise<CellResult> {
+  try {
+    const clean = {
+      ...(typeof input.name === "string" ? { name: input.name } : {}),
+      ...(input.nameRu === null || typeof input.nameRu === "string" ? { nameRu: input.nameRu } : {}),
+      ...(typeof input.archived === "boolean" ? { archived: input.archived } : {}),
+      ...(input.move === "up" || input.move === "down" ? { move: input.move } : {}),
+    }
+    await updatePosition(await authorize("employee:manage"), id, clean)
     return done()
   } catch (error) {
     return failRu(error)

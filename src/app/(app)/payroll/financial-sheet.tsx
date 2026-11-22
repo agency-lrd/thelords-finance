@@ -18,6 +18,7 @@ import { sheetAdminTexts } from "@/lib/i18n/sheet-admin"
 import { NO_DEPT, paletteFor, PALETTE } from "./palette"
 import { MonthPicker, StatusBadges } from "./month-header"
 import { ApprovalDialog, CarryForwardDialog, ConditionsDialog } from "./payroll-dialogs"
+import { PositionsManager } from "./positions-manager"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import { withMonth } from "@/lib/month-nav"
 import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs } from "@/lib/department-view"
@@ -60,12 +61,15 @@ type Props = {
   accounts: { id: string; name: string; currency: string }[]
   perms: Perms
   period: { status: "OPEN" | "CLOSING" | "CLOSED" | "LOCKED"; closedAt: string | null; closedBy: string | null; draftEntries: number }
+  /** Position directory in its order (active and archived). */
+  positions: { id: string; name: string; nameRu: string | null; sortOrder: number; archived: boolean; employees: number }[]
 }
 
 type Undo = { employeeId: string; col: ColKey; before: string; after: string }
 
 type ColKey =
   | "name"
+  | "positionId"
   | "department"
   | "fix"
   | "terms"
@@ -91,7 +95,7 @@ type ColKey =
   | "paymentDate"
   | "notes"
 
-type Kind = "text" | "money" | "select" | "check" | "terms" | "wallet" | "date" | "output"
+type Kind = "text" | "money" | "select" | "check" | "terms" | "wallet" | "date" | "output" | "position"
 type Col = { key: ColKey; kind: Kind; width: number; field?: string; can: boolean; money?: boolean }
 
 const MONEY_TOTALS: ColKey[] = ["fix", "variable", "bonus", "deduction", "kpiTarget", "kpiActual", "calculated", "fact", "approved", "paid", "outstanding"]
@@ -107,6 +111,7 @@ type Toast = { id: number; text: string; tone: "ok" | "error" }
 function baseValue(row: SheetRow, col: ColKey, t: Dictionary): string {
   switch (col) {
     case "name": return row.name
+    case "positionId": return row.positionName ?? ""
     case "department": return row.departmentName ?? ""
     case "fix": return row.fix ?? ""
     case "terms": return row.terms ?? ""
@@ -141,7 +146,7 @@ export function FinancialSheet(props: Props) {
   const A = sheetAdminTexts[locale]
   // Active departments drive the dropdowns and colors; archived ones are only in the department manager.
   const departments = useMemo(() => props.departments.filter((d) => !d.archived), [props.departments])
-  const [panel, setPanel] = useState<null | "departments" | "addDepartment" | "archive" | "bulkFix" | "approve" | "carry">(null)
+  const [panel, setPanel] = useState<null | "departments" | "addDepartment" | "archive" | "bulkFix" | "approve" | "carry" | "positions">(null)
   const [conditionsFor, setConditionsFor] = useState<SheetRow | null>(null)
   // Confirmation checkboxes change at once; the server result then confirms or rolls them back.
   const [confirmOverride, setConfirmOverride] = useState<Record<string, boolean>>({})
@@ -219,6 +224,7 @@ export function FinancialSheet(props: Props) {
     const base: Col[] = [
       { key: "name", kind: "text", width: 190, field: "name", can: canEdit(perms.employee) },
       { key: "department", kind: "select", width: 170, field: "department", can: canEdit(perms.employee) },
+      { key: "positionId", kind: "position", width: 190, field: "positionId", can: canEdit(perms.employee) },
       { key: "fix", kind: "money", width: 120, field: "fix", can: canEdit(perms.salary), money: true },
       { key: "terms", kind: "terms", width: 200, can: canEdit(perms.compensation) },
       { key: "kpiTarget", kind: "money", width: 120, field: "kpiTarget", can: canEdit(perms.kpi), money: true },
@@ -286,6 +292,7 @@ export function FinancialSheet(props: Props) {
       case "deduction": return row.deduction
       case "fact": return row.fact ?? ""
       case "variable": return row.kpiBonusOverride ?? ""
+      case "positionId": return row.positionId ?? ""
       default: return baseValue(row, col, t)
     }
   }
@@ -308,6 +315,17 @@ export function FinancialSheet(props: Props) {
         return false
       }
       value = match.id
+    }
+    if (col.key === "positionId") {
+      // Typed or picked name (English or Russian) -> position id; empty = no position.
+      if (value) {
+        const match = props.positions.find((p) => !p.archived && (p.id === value || p.name.toLowerCase() === value.toLowerCase() || p.nameRu?.toLowerCase() === value.toLowerCase()))
+        if (!match) {
+          toast(`${A.positions.unknown}: "${input}"`, "error")
+          return false
+        }
+        value = match.id
+      }
     }
     if (col.key === "status") {
       const match = STATUSES.find((s) => s === value || t.sheet.employeeStatus[s].toLowerCase() === value.toLowerCase())
@@ -446,6 +464,7 @@ export function FinancialSheet(props: Props) {
     then?.()
     const original = col.key === "department" ? (row.departmentId ?? "") : col.key === "status" ? row.status : raw(row, col.key)
     if (value === original) return
+    if (col.key === "positionId" && value.trim().toLowerCase() === (row.positionName ?? "").toLowerCase()) return
     // Opening the wallet editor and leaving it empty keeps the wallet (clearing is an explicit action).
     if (col.kind === "wallet" && !value.trim()) return
     // Saved cells arrive fresh with the action response (revalidatePath); no second full reload.
@@ -689,6 +708,9 @@ export function FinancialSheet(props: Props) {
           <Button variant="outline" size="sm" onClick={() => setPanel("departments")}>
             <Building2 /> {A.toolbar.departments}
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setPanel("positions")}>
+            <SlidersHorizontal /> {A.positions.title}
+          </Button>
           {perms.employee && (
             <Button variant="outline" size="sm" onClick={() => setPanel("archive")}>
               <Archive /> {A.toolbar.archive}
@@ -870,6 +892,7 @@ export function FinancialSheet(props: Props) {
                               col={col}
                               value={editing.value}
                               departments={departments}
+                              positions={props.positions}
                               t={t}
                               onChange={(value) => setEditing((e) => (e ? { ...e, value } : e))}
                               onCommit={(dir) => commitEdit(() => dir && move(dir === "down" ? 1 : 0, dir === "right" ? 1 : 0))}
@@ -894,6 +917,7 @@ export function FinancialSheet(props: Props) {
                               inheritedLabel={A.payroll.inherited}
                               factTexts={{ reset: A.payroll.factReset, manual: A.payroll.factManual, difference: A.payroll.factDifference, days: A.payroll.prorationDays, prorated: A.payroll.prorationTip, bonusManual: A.payroll.bonusManual, bonusManualShort: A.payroll.bonusManualShort, bonusAuto: A.payroll.bonusAuto, bonusReset: A.payroll.bonusReset, bonusEdit: A.payroll.bonusEdit }}
                               onResetBonus={col.can && col.key === "variable" ? async () => { await saveCell(row, col, "") } : undefined}
+                              noPositionLabel={A.positions.none}
                               onClearWallet={col.key === "wallet" && col.can && row.wallet ? async () => { if (window.confirm(locale === "ru" ? `Удалить кошелёк сотрудника ${row.name}? Прошлые выплаты сохранятся.` : `Remove ${row.name}'s wallet? Past payments are kept.`)) await saveCell(row, col, "") } : undefined}
                               onResetFact={col.can && col.key === "fact" ? async () => { await saveCell(row, col, "") } : undefined}
                               onToggle={() => toggle(row, col)}
@@ -973,7 +997,7 @@ export function FinancialSheet(props: Props) {
       </div>
       {grand.excluded > 0 && <p className="text-xs text-amber-300/80">{fill(t.sheet.mixedCurrency, { n: grand.excluded })}</p>}
 
-      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter} monthKey={monthKey} departments={departments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
+      {editable && perms.employee && perms.salary && <AddEmployee key={deptFilter || "none"} defaultDepartmentId={deptFilter} positions={props.positions} labels={{ position: A.positions.position, kpi: A.positions.kpi, commission: A.positions.commission, wallet: A.positions.wallet, none: A.positions.none }} monthKey={monthKey} departments={departments} t={t} hint={A.newRow} toast={toast} onDone={refresh} />}
 
       {termsFor && (
         <TermsDialog
@@ -1036,11 +1060,12 @@ export function FinancialSheet(props: Props) {
           }}
         />
       )}
+      {panel === "positions" && <PositionsManager t={A} positions={props.positions} canManage={perms.employee} onChanged={refresh} onClose={() => setPanel(null)} />}
       {panel === "approve" && (
         <ApprovalDialog monthKey={monthKey} monthTitle={monthTitle} locale={locale} t={A} canConfirm={perms.prepare && editable} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
       )}
       {panel === "carry" && (
-        <CarryForwardDialog monthKey={monthKey} monthTitle={monthTitle} departments={departments} locale={locale} t={A} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
+        <CarryForwardDialog monthKey={monthKey} monthTitle={monthTitle} departments={departments} positions={props.positions} locale={locale} t={A} toast={toast} onChanged={refresh} onClose={() => setPanel(null)} />
       )}
       {conditionsFor && (
         <ConditionsDialog
@@ -1107,6 +1132,7 @@ function CellView(props: {
   onResetBonus?: () => void
   onResetFact?: () => void
   onClearWallet?: () => void
+  noPositionLabel: string
 }) {
   const { row, col, raw, locale, t } = props
   const money = (v: string | null, opts = {}) => formatAmount(v, row.currency, locale, opts)
@@ -1136,6 +1162,8 @@ function CellView(props: {
           </span>
         </span>
       )
+    case "positionId":
+      return row.positionName ? <span className="block truncate">{row.positionName}</span> : <span className="text-[11px] text-muted-foreground">{props.noPositionLabel}</span>
     case "department":
       return row.departmentName ? (
         <span className={cn("inline-flex max-w-full items-center truncate rounded-full px-2.5 py-0.5 text-[11px] font-semibold", props.palette.chip)}>{row.departmentName}</span>
@@ -1290,6 +1318,7 @@ function CellEditor(props: {
   col: Col
   value: string
   departments: { id: string; name: string }[]
+  positions: Props["positions"]
   t: Dictionary
   onChange: (value: string) => void
   onCommit: (dir?: "down" | "right") => void
@@ -1339,6 +1368,26 @@ function CellEditor(props: {
           <option key={v} value={v}>{label}</option>
         ))}
       </select>
+    )
+  }
+  if (col.kind === "position") {
+    // Searchable: type part of the name, pick from the list (English or Russian names).
+    return (
+      <>
+        <datalist id="sheet-positions">
+          {props.positions.filter((p) => !p.archived).map((p) => <option key={p.id} value={p.name}>{p.nameRu ?? ""}</option>)}
+        </datalist>
+        <input
+          ref={ref}
+          value={value}
+          list="sheet-positions"
+          placeholder="Influencer Manager…"
+          onChange={(e) => props.onChange(e.target.value)}
+          onBlur={() => finish(() => props.onCommit())}
+          onKeyDown={onKeyDown}
+          className={className}
+        />
+      </>
     )
   }
   return (
@@ -1583,9 +1632,9 @@ function HistoryDialog({ row, locale, t, onClose }: { row: SheetRow; locale: Loc
 }
 
 /** The empty row under the table: type a name, department and FIX, press Enter. */
-function AddEmployee({ monthKey, departments, t, hint, toast, onDone, defaultDepartmentId }: { monthKey: string; departments: { id: string; name: string }[]; t: Dictionary; hint: string; toast: (text: string, tone?: "ok" | "error") => void; onDone: () => void; defaultDepartmentId?: string }) {
+function AddEmployee({ monthKey, departments, positions, labels, t, hint, toast, onDone, defaultDepartmentId }: { monthKey: string; departments: { id: string; name: string }[]; positions: Props["positions"]; labels: { position: string; kpi: string; commission: string; wallet: string; none: string }; t: Dictionary; hint: string; toast: (text: string, tone?: "ok" | "error") => void; onDone: () => void; defaultDepartmentId?: string }) {
   // The selected department tab is the default department of a new employee.
-  const [form, setForm] = useState({ name: "", departmentId: defaultDepartmentId || departments[0]?.id || "", fix: "", currency: "USD", hireDate: "" })
+  const [form, setForm] = useState({ name: "", departmentId: defaultDepartmentId || departments[0]?.id || "", positionId: "", fix: "", currency: "USD", hireDate: "", kpiTarget: "", commissionPct: "10", wallet: "" })
   const [saving, setSaving] = useState(false)
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }))
   return (
@@ -1595,11 +1644,13 @@ function AddEmployee({ monthKey, departments, t, hint, toast, onDone, defaultDep
         e.preventDefault()
         const fix = normalizeNumber(form.fix)
         if (!fix) return toast(`${t.sheet.add.fix}?`, "error")
+        const kpiTarget = form.kpiTarget.trim() ? normalizeNumber(form.kpiTarget) : ""
+        if (kpiTarget === null) return toast(`${labels.kpi}?`, "error")
         setSaving(true)
-        const result = await addEmployeeAction(monthKey, { ...form, fix })
+        const result = await addEmployeeAction(monthKey, { ...form, fix, kpiTarget: kpiTarget ?? "" })
         setSaving(false)
         if (!result.ok) return toast(result.message, "error")
-        setForm((f) => ({ ...f, name: "", fix: "", hireDate: "" }))
+        setForm((f) => ({ ...f, name: "", fix: "", hireDate: "", kpiTarget: "", wallet: "" }))
         toast(t.sheet.rowsSaved)
         onDone()
       }}
@@ -1613,6 +1664,12 @@ function AddEmployee({ monthKey, departments, t, hint, toast, onDone, defaultDep
           {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </Select>
       </Labeled>
+      <Labeled label={labels.position}>
+        <Select value={form.positionId} onChange={set("positionId")} className="w-52">
+          <option value="">{labels.none}</option>
+          {positions.filter((p) => !p.archived).map((p) => <option key={p.id} value={p.id}>{p.name}{p.nameRu ? ` · ${p.nameRu}` : ""}</option>)}
+        </Select>
+      </Labeled>
       <Labeled label={t.sheet.add.fix}>
         <Input value={form.fix} onChange={set("fix")} required inputMode="decimal" className="w-28" />
       </Labeled>
@@ -1623,6 +1680,15 @@ function AddEmployee({ monthKey, departments, t, hint, toast, onDone, defaultDep
       </Labeled>
       <Labeled label={t.sheet.add.startDate}>
         <Input type="date" value={form.hireDate} onChange={set("hireDate")} className="w-40" />
+      </Labeled>
+      <Labeled label={labels.kpi}>
+        <Input value={form.kpiTarget} onChange={set("kpiTarget")} inputMode="decimal" className="w-28" />
+      </Labeled>
+      <Labeled label={labels.commission}>
+        <Input value={form.commissionPct} onChange={set("commissionPct")} inputMode="decimal" className="w-20" />
+      </Labeled>
+      <Labeled label={labels.wallet}>
+        <Input value={form.wallet} onChange={set("wallet")} maxLength={200} className="w-56" autoComplete="off" />
       </Labeled>
       <Button type="submit" disabled={saving} className="h-9">
         <Plus /> {saving ? t.common.saving : t.common.add}
