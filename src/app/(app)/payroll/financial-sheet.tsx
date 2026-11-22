@@ -21,7 +21,7 @@ import { ApprovalDialog, CarryForwardDialog, ConditionsDialog } from "./payroll-
 import { PositionsManager } from "./positions-manager"
 import { ArchivePanel, BulkFixDialog, DepartmentManager, type SheetDepartment } from "./sheet-admin"
 import { withMonth } from "@/lib/month-nav"
-import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs } from "@/lib/department-view"
+import { ALL_DEPARTMENTS, DEPARTMENT_PARAM, departmentViewActive, orderDepartmentTabs, stableGridHeight } from "@/lib/department-view"
 import {
   addEmployeeAction,
   archiveEmployeeAction,
@@ -199,7 +199,7 @@ export function FinancialSheet(props: Props) {
   const unsaved = editing !== null || inflight > 0
   function navigate(key: string) {
     if (unsaved && !window.confirm(A.month.unsaved)) return
-    router.push(withMonth(window.location.search, key))
+    router.push(withMonth(window.location.search, key), { scroll: false })
   }
   useEffect(() => {
     if (!unsaved) return
@@ -460,7 +460,7 @@ export function FinancialSheet(props: Props) {
     const col = cols[editing.c]
     const value = editing.value
     setEditing(null)
-    gridRef.current?.focus()
+    gridRef.current?.focus({ preventScroll: true })
     then?.()
     const original = col.key === "department" ? (row.departmentId ?? "") : col.key === "status" ? row.status : raw(row, col.key)
     if (value === original) return
@@ -576,9 +576,21 @@ export function FinancialSheet(props: Props) {
     return () => node.removeEventListener("paste", handler)
   })
 
-  // Keep the active cell visible.
+  // Keep the active cell visible by scrolling the grid only. (scrollIntoView also scrolled the whole page,
+  // which made the screen jump when a cell was clicked or the keyboard moved.)
   useEffect(() => {
-    gridRef.current?.querySelector<HTMLElement>(`[data-cell="${active.r}:${active.c}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" })
+    const grid = gridRef.current
+    const cell = grid?.querySelector<HTMLElement>(`[data-cell="${active.r}:${active.c}"]`)
+    if (!grid || !cell) return
+    const head = 40
+    const foot = 40
+    const sticky = active.c === 0 ? 0 : (grid.querySelector<HTMLElement>('[data-cell$=":0"]')?.offsetWidth ?? 0)
+    const top = cell.offsetTop
+    const left = cell.offsetLeft
+    if (top - head < grid.scrollTop) grid.scrollTop = top - head
+    else if (top + cell.offsetHeight + foot > grid.scrollTop + grid.clientHeight) grid.scrollTop = top + cell.offsetHeight + foot - grid.clientHeight
+    if (left - sticky < grid.scrollLeft) grid.scrollLeft = Math.max(0, left - sticky)
+    else if (left + cell.offsetWidth > grid.scrollLeft + grid.clientWidth) grid.scrollLeft = left + cell.offsetWidth - grid.clientWidth
   }, [active])
 
   // ── Totals ──
@@ -614,6 +626,11 @@ export function FinancialSheet(props: Props) {
   }, [visible, t])
 
   const grand = totalsFor(visible)
+
+  // Department view: the grid keeps ONE height for the whole month (sized for the largest department,
+  // capped by the screen), so switching departments never moves the blocks underneath.
+  const stableHeight = useMemo(() => (deptView ? stableGridHeight(rows.map((r) => r.departmentId)) : undefined), [deptView, rows])
+  const tableWidth = cols.reduce((sum, c) => sum + c.width, 0)
   const unconfirmed = rows.filter((r) => !r.confirmed || r.stale).length
 
   // ── Bulk actions on the selected rows ──
@@ -819,12 +836,14 @@ export function FinancialSheet(props: Props) {
         role="grid"
         aria-label={t.sheet.title}
         aria-busy={busy || refreshing}
+        style={stableHeight ? { height: stableHeight } : undefined}
         className={cn(
-          "relative max-h-[calc(100dvh-300px)] min-h-[320px] overflow-auto rounded-2xl bg-card/50 ring-1 ring-foreground/10 outline-none focus-visible:ring-primary/40",
+          "relative max-h-[calc(100dvh-300px)] min-h-[320px] overflow-auto [overflow-anchor:none] rounded-2xl bg-card/50 ring-1 ring-foreground/10 outline-none focus-visible:ring-primary/40",
           (busy || refreshing) && "cursor-progress",
         )}
       >
-        <table className="w-max min-w-full border-separate border-spacing-0 text-[13px]">
+        {/* Fixed layout: column widths never depend on the rows shown (department, edits, long names). */}
+        <table className="min-w-full table-fixed border-separate border-spacing-0 text-[13px]" style={{ width: tableWidth, ...(stableHeight ? { height: "100%" } : {}) }}>
           <thead>
             <tr>
               {cols.map((col, c) => (
@@ -875,7 +894,7 @@ export function FinancialSheet(props: Props) {
                           }}
                           onDoubleClick={() => col.kind !== "check" && beginEdit()}
                           className={cn(
-                            "relative h-9 border-b border-r border-border/50 px-3 whitespace-nowrap",
+                            "relative h-9 overflow-hidden border-b border-r border-border/50 px-3 text-ellipsis whitespace-nowrap",
                             col.money && "text-right font-mono tabular-nums",
                             c === 0 && "sticky left-0 z-10 bg-[#0f0c10] font-medium",
                             !col.can && col.kind !== "output" && "text-foreground/90",
@@ -898,7 +917,7 @@ export function FinancialSheet(props: Props) {
                               onCommit={(dir) => commitEdit(() => dir && move(dir === "down" ? 1 : 0, dir === "right" ? 1 : 0))}
                               onCancel={() => {
                                 setEditing(null)
-                                gridRef.current?.focus()
+                                gridRef.current?.focus({ preventScroll: true })
                               }}
                             />
                           ) : (
@@ -974,8 +993,15 @@ export function FinancialSheet(props: Props) {
                 ),
               ]
             })}
+            {/* Department view: an empty filler row takes the remaining height, so the TOTAL row always sits at
+              the bottom of the fixed-height grid instead of jumping with the number of employees. */}
+            {stableHeight && (
+              <tr aria-hidden style={{ height: "100%" }}>
+                <td colSpan={cols.length} className="border-0 p-0" />
+              </tr>
+            )}
           </tbody>
-          {visible.length > 0 && (
+          {(visible.length > 0 || !!stableHeight) && (
             <tfoot>
               <tr>
                 {cols.map((col, c) => (
@@ -1043,7 +1069,7 @@ export function FinancialSheet(props: Props) {
           onChanged={refresh}
           onClose={() => {
             setPanel(null)
-            gridRef.current?.focus()
+            gridRef.current?.focus({ preventScroll: true })
           }}
         />
       )}
@@ -1056,7 +1082,7 @@ export function FinancialSheet(props: Props) {
           onChanged={refresh}
           onClose={() => {
             setPanel(null)
-            gridRef.current?.focus()
+            gridRef.current?.focus({ preventScroll: true })
           }}
         />
       )}
@@ -1337,7 +1363,7 @@ function CellEditor(props: {
   // the value's length selected all text after the 2nd character, so the 3rd keystroke replaced it:
   // amounts and wallet addresses could not be typed beyond two characters.)
   useEffect(() => {
-    ref.current?.focus()
+    ref.current?.focus({ preventScroll: true })
     if (ref.current && "setSelectionRange" in ref.current && col.kind !== "select" && value.length > 1) ref.current.select()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally on mount only
   }, [])

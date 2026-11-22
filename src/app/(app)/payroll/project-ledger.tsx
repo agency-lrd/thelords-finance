@@ -78,6 +78,8 @@ export function ProjectLedger(props: Props) {
   if (selected !== ALL_DEPARTMENTS && ledger.departments.some((d) => d.id === selected)) {
     return (
       <DepartmentFinance
+        // Per department: its add forms start empty (typed values never leak into another department).
+        key={selected}
         locale={locale}
         monthKey={props.monthKey}
         baseCurrency={baseCurrency}
