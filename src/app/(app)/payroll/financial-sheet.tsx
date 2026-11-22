@@ -786,7 +786,7 @@ export function FinancialSheet(props: Props) {
       )}
 
       {legacyRows.length > 0 && (
-        <LegacyAssignment locale={locale} monthKey={monthKey} rows={legacyRows} mainDepartments={tabs} canEdit={editable && perms.employee} toast={toast} onChanged={refresh} />
+        <LegacyAssignment locale={locale} monthKey={monthKey} rows={legacyRows} mainDepartments={tabs} canEdit={editable && perms.employee} toast={toast} />
       )}
 
       {rows.length === 0 && (

@@ -40,13 +40,16 @@ const T = {
 const fill = (s: string, v: Record<string, string | number>) => s.replace(/\{(\w+)\}/g, (_, k) => String(v[k] ?? ""))
 
 /** Employees still in old departments this month, assigned explicitly (one by one or per old department). */
-export function LegacyAssignment(props: { locale: Locale; monthKey: string; rows: SheetRow[]; mainDepartments: { id: string; name: string }[]; canEdit: boolean; toast: (text: string, tone?: "ok" | "error") => void; onChanged: () => void }) {
+export function LegacyAssignment(props: { locale: Locale; monthKey: string; rows: SheetRow[]; mainDepartments: { id: string; name: string }[]; canEdit: boolean; toast: (text: string, tone?: "ok" | "error") => void }) {
   const t = T[props.locale]
   const [open, setOpen] = useState(true)
   const [choice, setChoice] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
+  // Confirmed transfers leave the list at once; the fresh sheet arrives with the same server response.
+  const [moved, setMoved] = useState<Set<string>>(new Set())
+  const pending = props.rows.filter((r) => !moved.has(r.employeeId))
   const groups = new Map<string, { name: string; rows: SheetRow[] }>()
-  for (const r of props.rows) {
+  for (const r of pending) {
     const key = r.departmentId ?? "none"
     const g = groups.get(key) ?? { name: r.departmentName ?? t.noDepartment, rows: [] }
     g.rows.push(r)
@@ -55,23 +58,27 @@ export function LegacyAssignment(props: { locale: Locale; monthKey: string; rows
   const nameOf = (id: string) => props.mainDepartments.find((d) => d.id === id)?.name ?? ""
 
   async function move(list: SheetRow[], departmentId: string, key: string) {
+    if (busy) return
     setBusy(key)
     for (const r of list) {
-      const result = await updateCellAction(props.monthKey, r.employeeId, "department", departmentId, r.departmentId ?? "")
+      const result = await updateCellAction(props.monthKey, r.employeeId, "department", departmentId, r.departmentId ?? "").catch(() => ({ ok: false as const, message: props.locale === "ru" ? "Соединение прервано — перевод не сохранён" : "Connection lost: not saved" }))
       if (!result.ok) {
         setBusy(null)
+        // The employee stays in the list: nothing changed on the server.
         return props.toast(`${r.name}: ${result.message}`, "error")
       }
+      setMoved((m) => new Set(m).add(r.employeeId))
       props.toast(fill(t.done, { name: r.name, dept: nameOf(departmentId) }))
     }
     setBusy(null)
-    props.onChanged()
   }
+
+  if (pending.length === 0) return null
 
   return (
     <section className="rounded-2xl border border-amber-400/40 bg-amber-400/5 px-4 py-3">
       <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-left text-sm font-semibold text-amber-200">
-        <AlertTriangle className="size-4 shrink-0" /> {fill(t.title, { n: props.rows.length })}
+        <AlertTriangle className="size-4 shrink-0" /> {fill(t.title, { n: pending.length })}
         <span className="ml-auto flex items-center gap-1 text-xs font-normal text-muted-foreground">{open ? t.hide : t.show} {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}</span>
       </button>
       {open && (

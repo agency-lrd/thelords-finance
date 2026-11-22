@@ -571,7 +571,7 @@ export async function updateSheetCell(user: SessionUser, m: Month, employeeId: s
       }
       case "department":
         await assertMainDepartment(tx, user, value, m)
-        await setDepartmentFrom(tx, user, employeeId, value, monthStart(m))
+        await setDepartmentFrom(tx, user, employeeId, value, m)
         break
       case "fix":
       case "currency":
@@ -739,20 +739,28 @@ async function assertMainDepartment(tx: Tx | Db, user: SessionUser, departmentId
   }
 }
 
-async function setDepartmentFrom(tx: Tx, user: SessionUser, employeeId: string, departmentId: string, start: Date) {
+/**
+ * Moves an employee to a department from a month's first day. The assignment that counts is the one the
+ * sheet shows for that month (the latest one in force during the month), so an employee hired mid-month
+ * (assignment starting on the hire date) is moved too. Idempotent: if that assignment already has the
+ * department, nothing is written. Earlier months keep their department; the position is kept.
+ */
+async function setDepartmentFrom(tx: Tx, user: SessionUser, employeeId: string, departmentId: string, m: Month) {
   const department = await tx.department.findFirst({ where: { id: departmentId, organizationId: user.organizationId, archivedAt: null } })
   if (!department) throw new UserInputError("Department not found.")
+  const start = monthStart(m)
   const current = await tx.employeeAssignment.findFirst({
-    where: { employeeId, isPrimary: true, validFrom: { lte: start }, OR: [{ validTo: null }, { validTo: { gt: start } }] },
+    where: { employeeId, isPrimary: true, validFrom: { lte: monthEnd(m) }, OR: [{ validTo: null }, { validTo: { gt: start } }] },
+    orderBy: { validFrom: "desc" },
   })
-  if (current?.departmentId === departmentId) return
-  const next = await tx.employeeAssignment.findFirst({ where: { employeeId, isPrimary: true, validFrom: { gt: start } }, orderBy: { validFrom: "asc" } })
-  if (current && current.validFrom.getTime() === start.getTime()) {
-    await tx.employeeAssignment.update({ where: { id: current.id }, data: { departmentId, teamId: null } })
-    return
+  if (current?.departmentId === departmentId) return current
+  if (current && current.validFrom.getTime() >= start.getTime()) {
+    // Starts in this month (hire date or an earlier change this month): change it in place.
+    return tx.employeeAssignment.update({ where: { id: current.id }, data: { departmentId, teamId: null } })
   }
+  const next = await tx.employeeAssignment.findFirst({ where: { employeeId, isPrimary: true, validFrom: { gt: monthEnd(m) } }, orderBy: { validFrom: "asc" } })
   if (current) await tx.employeeAssignment.update({ where: { id: current.id }, data: { validTo: start } })
-  await tx.employeeAssignment.create({
+  return tx.employeeAssignment.create({
     data: { employeeId, departmentId, positionId: current?.positionId ?? null, isPrimary: true, allocationRate: 1, validFrom: start, validTo: current?.validTo ?? next?.validFrom ?? null },
   })
 }
@@ -1576,7 +1584,7 @@ export async function carryForwardEmployees(user: SessionUser, m: Month, items: 
         // on the sheet for manual assignment (never guessed).
         if (edit.departmentId && edit.departmentId !== source.departmentId) await assertMainDepartment(tx, user, edit.departmentId, m)
         const departmentId = edit.departmentId || source.departmentId
-        if (departmentId) await setDepartmentFrom(tx, user, employee.id, departmentId, start)
+        if (departmentId) await setDepartmentFrom(tx, user, employee.id, departmentId, m)
         let positionId = edit.positionId !== undefined ? edit.positionId : source.positionId
         // A position archived since last month is not carried into a new month.
         if (positionId && edit.positionId === undefined && !(await tx.position.findFirst({ where: { id: positionId, archivedAt: null } }))) positionId = null

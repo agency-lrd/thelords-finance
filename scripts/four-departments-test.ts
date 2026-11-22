@@ -82,6 +82,34 @@ async function main() {
       assert.equal(inf.reduce((a, r) => a + Number(r.payable), 0), 1000 + 1500 + 1200)
       assert.equal(JSON.stringify(await rows(oct)), octSnapshot, "October keeps BizDev and HR")
     })
+
+    await step("stuck transfer (production case): mid-month hire in an old department moves, idempotently", async () => {
+      // As in production: hired on 6 November, assignment from the hire date in HR (created before the switch).
+      ids.Mid = (await sheet.addSheetEmployee(admin, nov, { name: "Mid Month", departmentId: influence.id, fix: "900", currency: "USD", hireDate: d("2026-11-06") }, prisma)).id
+      await prisma.employeeAssignment.updateMany({ where: { employeeId: ids.Mid }, data: { departmentId: hr.id } })
+      const before = await prisma.employeeAssignment.count({ where: { employeeId: ids.Mid } })
+      assert.equal((await rows(nov)).find((r) => r.employeeId === ids.Mid)!.departmentId, hr.id)
+      const totalBefore = (await rows(nov)).reduce((a, r) => a + Number(r.payable), 0)
+      await sheet.updateSheetCell(admin, nov, ids.Mid, "department", influence.id, prisma, hr.id)
+      let m = (await rows(nov)).find((r) => r.employeeId === ids.Mid)!
+      assert.equal(m.departmentId, influence.id, "the sheet shows the new department (was stuck before the fix)")
+      assert.equal(await prisma.employeeAssignment.count({ where: { employeeId: ids.Mid } }), before, "changed in place, no extra assignment")
+      // Duplicate clicks: no new rows, same result.
+      await sheet.updateSheetCell(admin, nov, ids.Mid, "department", influence.id, prisma)
+      await sheet.updateSheetCell(admin, nov, ids.Mid, "department", influence.id, prisma)
+      assert.equal(await prisma.employeeAssignment.count({ where: { employeeId: ids.Mid } }), before)
+      assert.equal(await prisma.payrollMonthEmployee.count({ where: { employeeId: ids.Mid } }), 1, "no duplicate monthly record")
+      m = (await rows(nov)).find((r) => r.employeeId === ids.Mid)!
+      assert.deepEqual([m.hireDate, m.fix, m.fixProrated], ["2026-11-06", "900", "750"], "identity and pay unchanged (25/30 days)")
+      assert.equal((await rows(nov)).reduce((a, r) => a + Number(r.payable), 0), totalBefore, "November totals unchanged")
+      // A failed request leaves the employee where they were.
+      await assert.rejects(() => sheet.updateSheetCell(admin, nov, ids.Mid, "department", bizdev.id, prisma), /four main departments/)
+      assert.equal((await rows(nov)).find((r) => r.employeeId === ids.Mid)!.departmentId, influence.id)
+      // Nobody is left in an old department: the warning panel has nothing to show.
+      const main = new Set(view.mainDepartmentTabs(await adminOps.listSheetDepartments(admin, nov, prisma)).map((x) => x.id))
+      assert.deepEqual((await rows(nov)).filter((r) => !r.departmentId || !main.has(r.departmentId)).map((r) => r.name), [])
+      assert.equal(JSON.stringify(await rows(oct)), octSnapshot, "October unchanged")
+    })
   } finally {
     summary()
     await stop()
